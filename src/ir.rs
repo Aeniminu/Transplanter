@@ -1,19 +1,50 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
+    pub constants: Vec<Constant>,
+    pub struct_factories: Vec<StructFactory>,
+    pub namespace_aliases: Vec<NamespaceAlias>,
     pub functions: Vec<Function>,
     pub main: Vec<Stmt>,
+}
+
+pub type FarmIr = Program;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constant {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructFactory {
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceAlias {
+    pub path: Vec<String>,
+    pub output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<FunctionParam>,
     pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionParam {
+    pub name: String,
+    pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
+    Noop,
     Comment(String),
+    Function(Function),
     Loop(Vec<Stmt>),
     While {
         condition: Expr,
@@ -28,6 +59,11 @@ pub enum Stmt {
         variable: String,
         start: Expr,
         end: Expr,
+        body: Vec<Stmt>,
+    },
+    ForEach {
+        variable: String,
+        iterable: Expr,
         body: Vec<Stmt>,
     },
     Let {

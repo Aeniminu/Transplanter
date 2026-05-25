@@ -61,19 +61,20 @@ impl Lexer {
                 '\n' => {
                     self.advance();
                 }
-                '/' if self.peek_next() == Some('/') => self.lex_comment(),
-                '/' if self.peek_next() == Some('*') => {
-                    return Err(FarmError::unsupported(
-                        "block comments",
-                        self.line,
-                        self.column,
-                    ));
+                '/' if self.peek_next() == Some('/') => {
+                    if self.is_floor_div_operator() {
+                        self.lex_operator()?;
+                    } else {
+                        self.lex_comment();
+                    }
                 }
+                '/' if self.peek_next() == Some('*') => self.lex_block_comment()?,
                 '"' => self.lex_string()?,
+                '\'' if self.peek_next().is_some_and(is_ident_start) => self.lex_lifetime(),
                 '0'..='9' => self.lex_number(),
                 'a'..='z' | 'A'..='Z' | '_' => self.lex_ident(),
                 ':' if self.peek_next() == Some(':') => self.lex_operator()?,
-                '{' | '}' | '(' | ')' | ',' | ';' | ':' => {
+                '{' | '}' | '(' | ')' | '[' | ']' | ',' | ';' | ':' => {
                     let line = self.line;
                     let column = self.column;
                     let symbol = self.advance().expect("peeked character exists");
@@ -84,7 +85,7 @@ impl Lexer {
                 }
                 _ => {
                     return Err(FarmError::new(
-                        format!("unexpected character `{ch}`"),
+                        format!("予期しない文字 `{ch}`"),
                         self.line,
                         self.column,
                     ));
@@ -113,6 +114,32 @@ impl Lexer {
         self.push(TokenKind::Comment(value), line, column);
     }
 
+    fn lex_block_comment(&mut self) -> Result<(), FarmError> {
+        let line = self.line;
+        let column = self.column;
+        self.advance();
+        self.advance();
+
+        let mut value = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '*' && self.peek_next() == Some('/') {
+                self.advance();
+                self.advance();
+                self.push(TokenKind::Comment(value), line, column);
+                return Ok(());
+            }
+
+            value.push(ch);
+            self.advance();
+        }
+
+        Err(FarmError::new(
+            "ブロックコメントが閉じられていません",
+            line,
+            column,
+        ))
+    }
+
     fn lex_string(&mut self) -> Result<(), FarmError> {
         let line = self.line;
         let column = self.column;
@@ -136,13 +163,21 @@ impl Lexer {
                     return Ok(());
                 }
                 '\n' => {
-                    return Err(FarmError::new("unterminated string literal", line, column));
+                    return Err(FarmError::new(
+                        "文字列リテラルが閉じられていません",
+                        line,
+                        column,
+                    ));
                 }
                 _ => {}
             }
         }
 
-        Err(FarmError::new("unterminated string literal", line, column))
+        Err(FarmError::new(
+            "文字列リテラルが閉じられていません",
+            line,
+            column,
+        ))
     }
 
     fn lex_number(&mut self) {
@@ -179,6 +214,24 @@ impl Lexer {
         self.push(TokenKind::Ident(value), line, column);
     }
 
+    fn lex_lifetime(&mut self) {
+        let line = self.line;
+        let column = self.column;
+        let mut value = String::new();
+        value.push(self.advance().expect("peeked character exists"));
+
+        while let Some(ch) = self.peek() {
+            if is_ident_continue(ch) {
+                value.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        self.push(TokenKind::Ident(value), line, column);
+    }
+
     fn lex_operator(&mut self) -> Result<(), FarmError> {
         let line = self.line;
         let column = self.column;
@@ -186,6 +239,14 @@ impl Lexer {
         let next = self.peek();
 
         let op = match (ch, next) {
+            ('/', Some('/')) => {
+                self.advance();
+                "//"
+            }
+            ('*', Some('*')) => {
+                self.advance();
+                "**"
+            }
             ('=', Some('=')) => {
                 self.advance();
                 "=="
@@ -222,8 +283,7 @@ impl Lexer {
                 self.advance();
                 "->"
             }
-            ('&', _) => return Err(FarmError::unsupported("borrowing", line, column)),
-            ('|', _) => return Err(FarmError::new("expected `||`", line, column)),
+            ('|', _) => return Err(FarmError::new("`||` が必要です", line, column)),
             _ => {
                 let text = ch.to_string();
                 self.push(TokenKind::Operator(text), line, column);
@@ -233,6 +293,70 @@ impl Lexer {
 
         self.push(TokenKind::Operator(op.to_string()), line, column);
         Ok(())
+    }
+
+    fn is_floor_div_operator(&self) -> bool {
+        if self.peek() != Some('/') || self.peek_next() != Some('/') {
+            return false;
+        }
+
+        let Some(prev) = self.previous_non_space_on_line() else {
+            return false;
+        };
+
+        if matches!(prev, ';' | '{' | '(' | '[' | ',' | ':') {
+            return false;
+        }
+
+        let Some(next) = self.next_non_space_after(2) else {
+            return false;
+        };
+
+        if next == '\n' {
+            return false;
+        }
+
+        self.line_contains_expr_terminator_after(2)
+    }
+
+    fn previous_non_space_on_line(&self) -> Option<char> {
+        let mut pos = self.pos;
+        while pos > 0 {
+            pos -= 1;
+            let ch = self.chars[pos];
+            if ch == '\n' {
+                return None;
+            }
+            if !matches!(ch, ' ' | '\t' | '\r') {
+                return Some(ch);
+            }
+        }
+        None
+    }
+
+    fn next_non_space_after(&self, offset: usize) -> Option<char> {
+        let mut pos = self.pos + offset;
+        while let Some(ch) = self.chars.get(pos).copied() {
+            if !matches!(ch, ' ' | '\t' | '\r') {
+                return Some(ch);
+            }
+            pos += 1;
+        }
+        None
+    }
+
+    fn line_contains_expr_terminator_after(&self, offset: usize) -> bool {
+        let mut pos = self.pos + offset;
+        while let Some(ch) = self.chars.get(pos).copied() {
+            if ch == '\n' {
+                return false;
+            }
+            if matches!(ch, ';' | '{' | ')' | ']' | ',') {
+                return true;
+            }
+            pos += 1;
+        }
+        false
     }
 
     fn push(&mut self, kind: TokenKind, line: usize, column: usize) {
@@ -260,4 +384,12 @@ impl Lexer {
 
         Some(ch)
     }
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }

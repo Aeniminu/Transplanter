@@ -1,8 +1,11 @@
 use crate::error::FarmError;
-use crate::ir::{ElseBranch, Expr, Function, Program, Stmt};
+use crate::ir::{
+    Constant, ElseBranch, Expr, FarmIr, Function, FunctionParam, NamespaceAlias, Program, Stmt,
+    StructFactory,
+};
 use crate::lexer::{Token, TokenKind};
 
-pub fn parse(tokens: &[Token]) -> Result<Program, FarmError> {
+pub fn parse(tokens: &[Token]) -> Result<FarmIr, FarmError> {
     Parser { tokens, pos: 0 }.parse_program()
 }
 
@@ -13,10 +16,29 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Result<Program, FarmError> {
+        let mut constants = Vec::new();
+        let mut struct_factories = Vec::new();
+        let mut namespace_aliases = Vec::new();
         let mut functions = Vec::new();
         let mut main = None;
 
         while !self.is_eof() {
+            if self.match_use_statement()? {
+                continue;
+            }
+
+            self.match_visibility()?;
+
+            if self.match_metadata_item(
+                &[],
+                &mut constants,
+                &mut struct_factories,
+                &mut namespace_aliases,
+                &mut functions,
+            )? {
+                continue;
+            }
+
             self.reject_unsupported_starter()?;
             self.expect_keyword("fn")?;
             let function = self.parse_function_after_fn()?;
@@ -25,7 +47,7 @@ impl<'a> Parser<'a> {
                 if !function.params.is_empty() {
                     let token = self.previous();
                     return Err(FarmError::new(
-                        "`fn main` must not have parameters",
+                        "`fn main` に引数は指定できません",
                         token.line,
                         token.column,
                     ));
@@ -33,7 +55,7 @@ impl<'a> Parser<'a> {
                 if main.is_some() {
                     let token = self.previous();
                     return Err(FarmError::new(
-                        "duplicate `fn main`",
+                        "`fn main` が重複しています",
                         token.line,
                         token.column,
                     ));
@@ -46,18 +68,23 @@ impl<'a> Parser<'a> {
 
         let Some(main) = main else {
             let (line, column) = self.end_position();
-            return Err(FarmError::new("missing `fn main`", line, column));
+            return Err(FarmError::new("`fn main` がありません", line, column));
         };
 
-        Ok(Program { functions, main })
+        Ok(Program {
+            constants,
+            struct_factories,
+            namespace_aliases,
+            functions,
+            main,
+        })
     }
 
     fn parse_function_after_fn(&mut self) -> Result<Function, FarmError> {
-        let name = self.expect_ident("expected function name")?;
+        let name = self.expect_ident("関数名が必要です")?;
 
         if self.check_operator("<") {
-            let token = self.peek().expect("checked token exists");
-            return Err(FarmError::unsupported("generics", token.line, token.column));
+            self.skip_generics()?;
         }
 
         self.expect_symbol('(')?;
@@ -65,28 +92,57 @@ impl<'a> Parser<'a> {
         self.expect_symbol(')')?;
 
         if self.match_operator("->") {
-            let token = self.previous();
-            return Err(FarmError::unsupported(
-                "function return types",
-                token.line,
-                token.column,
-            ));
+            self.skip_return_type()?;
         }
 
         let body = self.parse_block()?;
         Ok(Function { name, params, body })
     }
 
-    fn parse_params(&mut self) -> Result<Vec<String>, FarmError> {
+    fn parse_function_with_name_prefix(
+        &mut self,
+        namespace: &[String],
+    ) -> Result<Function, FarmError> {
+        let original_name = self.expect_ident("関数名が必要です")?;
+        let name = prefixed_name(namespace, &original_name);
+
+        if self.check_operator("<") {
+            self.skip_generics()?;
+        }
+
+        self.expect_symbol('(')?;
+        let params = self.parse_params()?;
+        self.expect_symbol(')')?;
+
+        if self.match_operator("->") {
+            self.skip_return_type()?;
+        }
+
+        let body = self.parse_block()?;
+        Ok(Function { name, params, body })
+    }
+
+    fn parse_params(&mut self) -> Result<Vec<FunctionParam>, FarmError> {
         let mut params = Vec::new();
 
         while !self.check_symbol(')') {
-            let param = self.expect_ident("expected parameter name")?;
-            params.push(param);
+            self.match_operator("&");
+            self.match_keyword("mut");
+            let name = self.expect_ident("引数名が必要です")?;
 
-            while !self.check_symbol(')') && !self.check_symbol(',') {
-                self.advance();
+            if self.match_symbol(':') {
+                self.skip_param_type()?;
             }
+
+            let default = if self.match_operator("=") {
+                let value = self.collect_param_default()?;
+                self.require_expr(&value, "デフォルト引数には値が必要です")?;
+                Some(value)
+            } else {
+                None
+            };
+
+            params.push(FunctionParam { name, default });
 
             if !self.match_symbol(',') {
                 break;
@@ -96,6 +152,537 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
+    fn skip_generics(&mut self) -> Result<(), FarmError> {
+        self.expect_operator("<")?;
+        let mut depth = 1usize;
+
+        while !self.is_eof() {
+            if self.match_operator("<") {
+                depth += 1;
+                continue;
+            }
+            if self.match_operator(">") {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(());
+                }
+                continue;
+            }
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new("generics の `>` が必要です", line, column))
+    }
+
+    fn skip_param_type(&mut self) -> Result<(), FarmError> {
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        let mut angle_depth = 0usize;
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof");
+
+            match &token.kind {
+                TokenKind::Operator(value) if value == "<" => {
+                    angle_depth += 1;
+                    self.advance();
+                }
+                TokenKind::Operator(value) if value == ">" && angle_depth > 0 => {
+                    angle_depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Symbol('(') => {
+                    paren_depth += 1;
+                    self.advance();
+                }
+                TokenKind::Symbol(')') if paren_depth > 0 => {
+                    paren_depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Symbol('[') => {
+                    bracket_depth += 1;
+                    self.advance();
+                }
+                TokenKind::Symbol(']') if bracket_depth > 0 => {
+                    bracket_depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Symbol('{') => {
+                    brace_depth += 1;
+                    self.advance();
+                }
+                TokenKind::Symbol('}') if brace_depth > 0 => {
+                    brace_depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Operator(value)
+                    if value == "="
+                        && paren_depth == 0
+                        && bracket_depth == 0
+                        && brace_depth == 0
+                        && angle_depth == 0 =>
+                {
+                    return Ok(());
+                }
+                TokenKind::Symbol(',') | TokenKind::Symbol(')')
+                    if paren_depth == 0
+                        && bracket_depth == 0
+                        && brace_depth == 0
+                        && angle_depth == 0 =>
+                {
+                    return Ok(());
+                }
+                _ => self.advance(),
+            }
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new(
+            "引数リストが閉じられていません",
+            line,
+            column,
+        ))
+    }
+
+    fn collect_param_default(&mut self) -> Result<Expr, FarmError> {
+        let mut tokens = Vec::new();
+        let mut depth = ExprDepth::default();
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match &token.kind {
+                TokenKind::Symbol(',') | TokenKind::Symbol(')') if depth.is_top_level() => {
+                    return Ok(Expr::new(tokens));
+                }
+                TokenKind::Comment(_) => {
+                    return Err(FarmError::new(
+                        "デフォルト引数が閉じられていません",
+                        token.line,
+                        token.column,
+                    ));
+                }
+                _ => depth.observe(&token.kind),
+            }
+
+            if let Some(expr_token) = token.expr_token() {
+                tokens.push(expr_token);
+            }
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new(
+            "引数リストが閉じられていません",
+            line,
+            column,
+        ))
+    }
+
+    fn collect_for_iterable_expr(&mut self) -> Result<Expr, FarmError> {
+        let mut tokens = Vec::new();
+        let mut depth = ExprDepth::default();
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match &token.kind {
+                TokenKind::Symbol('{') if depth.is_top_level() && !tokens.is_empty() => {
+                    return Ok(Expr::new(tokens));
+                }
+                TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth.is_top_level() => {
+                    return Err(FarmError::new(
+                        "for の後に `{` が必要です",
+                        token.line,
+                        token.column,
+                    ));
+                }
+                TokenKind::Comment(_) => {
+                    return Err(FarmError::new(
+                        "for の後に `{` が必要です",
+                        token.line,
+                        token.column,
+                    ));
+                }
+                _ => depth.observe(&token.kind),
+            }
+
+            if let Some(expr_token) = token.expr_token() {
+                tokens.push(expr_token);
+            }
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new("for の後に `{` が必要です", line, column))
+    }
+
+    fn match_metadata_item(
+        &mut self,
+        namespace: &[String],
+        constants: &mut Vec<Constant>,
+        struct_factories: &mut Vec<StructFactory>,
+        namespace_aliases: &mut Vec<NamespaceAlias>,
+        functions: &mut Vec<Function>,
+    ) -> Result<bool, FarmError> {
+        if self.match_keyword("struct") {
+            self.parse_struct_item(namespace, struct_factories, namespace_aliases)?;
+            return Ok(true);
+        }
+
+        if self.match_keyword("enum") {
+            self.parse_enum_item(namespace, constants, namespace_aliases)?;
+            return Ok(true);
+        }
+
+        if self.match_keyword("mod") {
+            self.parse_module_item(
+                namespace,
+                constants,
+                struct_factories,
+                namespace_aliases,
+                functions,
+            )?;
+            return Ok(true);
+        }
+
+        if self.match_keyword("impl") {
+            self.parse_impl_item(namespace, namespace_aliases, functions)?;
+            return Ok(true);
+        }
+
+        if self.match_keyword("trait") {
+            self.skip_item_header_and_block("trait 本体の `{` が必要です")?;
+            return Ok(true);
+        }
+
+        if self.check_keyword("macro_rules") || self.check_keyword("macro") {
+            self.advance();
+            self.match_operator("!");
+            self.skip_macro_item()?;
+            return Ok(true);
+        }
+
+        if self.match_keyword("extern") {
+            if self.match_keyword("crate") {
+                self.skip_statement_until_semicolon("extern crate 文の後に `;` が必要です")?;
+                return Ok(true);
+            }
+            return Err(FarmError::new(
+                "`crate` が必要です",
+                self.previous().line,
+                self.previous().column,
+            ));
+        }
+
+        Ok(false)
+    }
+
+    fn match_local_metadata_item(&mut self) -> Result<bool, FarmError> {
+        if self.match_keyword("struct")
+            || self.match_keyword("enum")
+            || self.match_keyword("mod")
+            || self.match_keyword("impl")
+            || self.match_keyword("trait")
+        {
+            self.skip_item_header_and_block("項目本体の `{` が必要です")?;
+            return Ok(true);
+        }
+
+        if self.check_keyword("macro_rules") || self.check_keyword("macro") {
+            self.advance();
+            self.match_operator("!");
+            self.skip_macro_item()?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    fn parse_struct_item(
+        &mut self,
+        namespace: &[String],
+        struct_factories: &mut Vec<StructFactory>,
+        namespace_aliases: &mut Vec<NamespaceAlias>,
+    ) -> Result<(), FarmError> {
+        let original_name = self.expect_ident("struct 名が必要です")?;
+        let name = prefixed_name(namespace, &original_name);
+        let mut path = namespace.to_vec();
+        path.push(original_name);
+        namespace_aliases.push(NamespaceAlias {
+            path,
+            output: name.clone(),
+        });
+
+        if self.check_operator("<") {
+            self.skip_generics()?;
+        }
+
+        let fields = if self.match_symbol('{') {
+            self.parse_named_fields()?
+        } else if self.match_symbol('(') {
+            self.parse_tuple_fields()?
+        } else {
+            self.expect_symbol(';')?;
+            Vec::new()
+        };
+
+        struct_factories.push(StructFactory { name, fields });
+        Ok(())
+    }
+
+    fn parse_named_fields(&mut self) -> Result<Vec<String>, FarmError> {
+        let mut fields = Vec::new();
+
+        while !self.check_symbol('}') {
+            if self.is_eof() {
+                let (line, column) = self.end_position();
+                return Err(FarmError::new(
+                    "struct 本体が閉じられていません",
+                    line,
+                    column,
+                ));
+            }
+
+            self.match_visibility()?;
+            let field = self.expect_ident("field 名が必要です")?;
+            fields.push(field);
+            self.expect_symbol(':')?;
+            self.skip_type_until_field_separator('}')?;
+
+            if !self.match_symbol(',') {
+                break;
+            }
+        }
+
+        self.expect_symbol('}')?;
+        Ok(fields)
+    }
+
+    fn parse_tuple_fields(&mut self) -> Result<Vec<String>, FarmError> {
+        let mut fields = Vec::new();
+        let mut index = 0usize;
+
+        while !self.check_symbol(')') {
+            if self.is_eof() {
+                let (line, column) = self.end_position();
+                return Err(FarmError::new(
+                    "tuple struct が閉じられていません",
+                    line,
+                    column,
+                ));
+            }
+
+            self.match_visibility()?;
+            fields.push(format!("field{index}"));
+            index += 1;
+            self.skip_type_until_field_separator(')')?;
+
+            if !self.match_symbol(',') {
+                break;
+            }
+        }
+
+        self.expect_symbol(')')?;
+        self.expect_semicolon("tuple struct の後に `;` が必要です")?;
+        Ok(fields)
+    }
+
+    fn parse_enum_item(
+        &mut self,
+        namespace: &[String],
+        constants: &mut Vec<Constant>,
+        namespace_aliases: &mut Vec<NamespaceAlias>,
+    ) -> Result<(), FarmError> {
+        let enum_name = self.expect_ident("enum 名が必要です")?;
+
+        if self.check_operator("<") {
+            self.skip_generics()?;
+        }
+
+        self.expect_symbol('{')?;
+        while !self.check_symbol('}') {
+            if self.is_eof() {
+                let (line, column) = self.end_position();
+                return Err(FarmError::new(
+                    "enum 本体が閉じられていません",
+                    line,
+                    column,
+                ));
+            }
+
+            let variant = self.expect_ident("variant 名が必要です")?;
+            let mut path = namespace.to_vec();
+            path.push(enum_name.clone());
+            path.push(variant.clone());
+            let output = path.join("_");
+            constants.push(Constant {
+                name: output.clone(),
+                value: path.join("."),
+            });
+            namespace_aliases.push(NamespaceAlias { path, output });
+
+            if self.check_symbol('(') {
+                self.skip_balanced_symbol('(', ')')?;
+            } else if self.check_symbol('{') {
+                self.skip_balanced_symbol('{', '}')?;
+            }
+
+            if self.match_operator("=") {
+                self.skip_until_item_separator('}')?;
+            }
+
+            if !self.match_symbol(',') {
+                break;
+            }
+        }
+
+        self.expect_symbol('}')?;
+        Ok(())
+    }
+
+    fn parse_module_item(
+        &mut self,
+        namespace: &[String],
+        constants: &mut Vec<Constant>,
+        struct_factories: &mut Vec<StructFactory>,
+        namespace_aliases: &mut Vec<NamespaceAlias>,
+        functions: &mut Vec<Function>,
+    ) -> Result<(), FarmError> {
+        let module_name = self.expect_ident("module 名が必要です")?;
+        if self.match_symbol(';') {
+            return Ok(());
+        }
+
+        self.expect_symbol('{')?;
+        let mut child_namespace = namespace.to_vec();
+        child_namespace.push(module_name);
+
+        while !self.check_symbol('}') {
+            if self.is_eof() {
+                let (line, column) = self.end_position();
+                return Err(FarmError::new(
+                    "module 本体が閉じられていません",
+                    line,
+                    column,
+                ));
+            }
+
+            if self.match_use_statement()? {
+                continue;
+            }
+
+            self.match_visibility()?;
+            if self.match_metadata_item(
+                &child_namespace,
+                constants,
+                struct_factories,
+                namespace_aliases,
+                functions,
+            )? {
+                continue;
+            }
+
+            if self.match_keyword("fn") {
+                let original_name = self.peek_ident("関数名が必要です")?;
+                let function = self.parse_function_with_name_prefix(&child_namespace)?;
+                let mut path = child_namespace.clone();
+                path.push(original_name);
+                namespace_aliases.push(NamespaceAlias {
+                    path,
+                    output: function.name.clone(),
+                });
+                functions.push(function);
+                continue;
+            }
+
+            self.skip_item_header_and_block("module 内項目の本体が必要です")?;
+        }
+
+        self.expect_symbol('}')?;
+        Ok(())
+    }
+
+    fn parse_impl_item(
+        &mut self,
+        namespace: &[String],
+        namespace_aliases: &mut Vec<NamespaceAlias>,
+        functions: &mut Vec<Function>,
+    ) -> Result<(), FarmError> {
+        if self.check_operator("<") {
+            self.skip_generics()?;
+        }
+
+        let header = self.collect_tokens_until_block("impl 本体の `{` が必要です")?;
+        let target = infer_impl_target(&header).ok_or_else(|| {
+            let (line, column) = self.end_position();
+            FarmError::new("impl 対象の型名が必要です", line, column)
+        })?;
+
+        self.expect_symbol('{')?;
+        let mut impl_namespace = namespace.to_vec();
+        impl_namespace.push(target);
+
+        while !self.check_symbol('}') {
+            if self.is_eof() {
+                let (line, column) = self.end_position();
+                return Err(FarmError::new(
+                    "impl 本体が閉じられていません",
+                    line,
+                    column,
+                ));
+            }
+
+            self.match_visibility()?;
+            if self.match_keyword("fn") {
+                let original_name = self.peek_ident("関数名が必要です")?;
+                let function = self.parse_function_with_name_prefix(&impl_namespace)?;
+                let mut path = impl_namespace.clone();
+                path.push(original_name);
+                namespace_aliases.push(NamespaceAlias {
+                    path,
+                    output: function.name.clone(),
+                });
+                functions.push(function);
+                continue;
+            }
+
+            self.skip_item_header_and_block("impl 内項目の本体が必要です")?;
+        }
+
+        self.expect_symbol('}')?;
+        Ok(())
+    }
+
+    fn skip_return_type(&mut self) -> Result<(), FarmError> {
+        while !self.check_symbol('{') {
+            let Some(token) = self.peek() else {
+                let (line, column) = self.end_position();
+                return Err(FarmError::new("関数本体の `{` が必要です", line, column));
+            };
+
+            match &token.kind {
+                TokenKind::Symbol(';') | TokenKind::Symbol('}') => {
+                    return Err(FarmError::new(
+                        "関数本体の `{` が必要です",
+                        token.line,
+                        token.column,
+                    ));
+                }
+                TokenKind::Comment(_) => {
+                    return Err(FarmError::new(
+                        "関数本体の `{` が必要です",
+                        token.line,
+                        token.column,
+                    ));
+                }
+                _ => self.advance(),
+            }
+        }
+
+        Ok(())
+    }
+
     fn parse_block(&mut self) -> Result<Vec<Stmt>, FarmError> {
         self.expect_symbol('{')?;
         let mut body = Vec::new();
@@ -103,7 +690,7 @@ impl<'a> Parser<'a> {
         while !self.check_symbol('}') {
             if self.is_eof() {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new("unterminated block", line, column));
+                return Err(FarmError::new("ブロックが閉じられていません", line, column));
             }
             body.push(self.parse_stmt()?);
         }
@@ -113,10 +700,25 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, FarmError> {
+        self.match_visibility()?;
+
+        if self.match_local_metadata_item()? {
+            return Ok(Stmt::Noop);
+        }
+
         self.reject_unsupported_starter()?;
 
         if let Some(comment) = self.match_comment() {
             return Ok(Stmt::Comment(comment));
+        }
+
+        if self.match_keyword("use") {
+            self.skip_statement_until_semicolon("use 文の後に `;` が必要です")?;
+            return Ok(Stmt::Noop);
+        }
+
+        if self.match_keyword("fn") {
+            return Ok(Stmt::Function(self.parse_function_after_fn()?));
         }
 
         if self.match_keyword("loop") {
@@ -125,8 +727,8 @@ impl<'a> Parser<'a> {
 
         if self.match_keyword("while") {
             let condition =
-                self.collect_expr_until_symbol('{', "expected `{` after while condition")?;
-            self.require_expr(&condition, "expected while condition")?;
+                self.collect_expr_until_symbol('{', "while 条件の後に `{` が必要です")?;
+            self.require_expr(&condition, "while 条件が必要です")?;
             let body = self.parse_block()?;
             return Ok(Stmt::While { condition, body });
         }
@@ -144,12 +746,12 @@ impl<'a> Parser<'a> {
         }
 
         if self.match_keyword("break") {
-            self.expect_semicolon("expected `;` after break")?;
+            self.expect_semicolon("break の後に `;` が必要です")?;
             return Ok(Stmt::Break);
         }
 
         if self.match_keyword("continue") {
-            self.expect_semicolon("expected `;` after continue")?;
+            self.expect_semicolon("continue の後に `;` が必要です")?;
             return Ok(Stmt::Continue);
         }
 
@@ -157,7 +759,7 @@ impl<'a> Parser<'a> {
             if self.match_symbol(';') {
                 return Ok(Stmt::Return(None));
             }
-            let value = self.collect_expr_until_semicolon("expected `;` after return value")?;
+            let value = self.collect_expr_until_semicolon("return 値の後に `;` が必要です")?;
             return Ok(Stmt::Return(Some(value)));
         }
 
@@ -165,8 +767,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_if_after_keyword(&mut self) -> Result<Stmt, FarmError> {
-        let condition = self.collect_expr_until_symbol('{', "expected `{` after if condition")?;
-        self.require_expr(&condition, "expected if condition")?;
+        let condition = self.collect_expr_until_symbol('{', "if 条件の後に `{` が必要です")?;
+        self.require_expr(&condition, "if 条件が必要です")?;
         let then_body = self.parse_block()?;
         let else_branch = self.parse_else_branch()?;
         Ok(Stmt::If {
@@ -183,8 +785,8 @@ impl<'a> Parser<'a> {
 
         if self.match_keyword("if") {
             let condition =
-                self.collect_expr_until_symbol('{', "expected `{` after else if condition")?;
-            self.require_expr(&condition, "expected else if condition")?;
+                self.collect_expr_until_symbol('{', "else if 条件の後に `{` が必要です")?;
+            self.require_expr(&condition, "else if 条件が必要です")?;
             let then_body = self.parse_block()?;
             let else_branch = self.parse_else_branch()?.map(Box::new);
             return Ok(Some(ElseBranch::ElseIf {
@@ -198,48 +800,51 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_for_after_keyword(&mut self) -> Result<Stmt, FarmError> {
-        let variable = self.expect_ident("expected loop variable")?;
+        let variable = self.expect_ident("ループ変数が必要です")?;
         self.expect_keyword("in")?;
 
-        let start = self.collect_expr_until_operator("..", "expected `..` in for range")?;
-        self.require_expr(&start, "expected for range start")?;
-        self.expect_operator("..")?;
-        let end = self.collect_expr_until_symbol('{', "expected `{` after for range")?;
-        self.require_expr(&end, "expected for range end")?;
+        let iterable = self.collect_for_iterable_expr()?;
+        self.require_expr(&iterable, "for の対象が必要です")?;
         let body = self.parse_block()?;
 
-        Ok(Stmt::For {
-            variable,
-            start,
-            end,
-            body,
-        })
+        if let Some((start, end)) = split_top_level_range(&iterable) {
+            self.require_expr(&start, "for 範囲の開始値が必要です")?;
+            self.require_expr(&end, "for 範囲の終了値が必要です")?;
+            Ok(Stmt::For {
+                variable,
+                start,
+                end,
+                body,
+            })
+        } else {
+            Ok(Stmt::ForEach {
+                variable,
+                iterable,
+                body,
+            })
+        }
     }
 
     fn parse_let_after_keyword(&mut self) -> Result<Stmt, FarmError> {
         self.match_keyword("mut");
-        let name = self.expect_ident("expected variable name after let")?;
+        let name = self.expect_ident("let の後に変数名が必要です")?;
 
         if !self.match_operator("=") {
             let token = self.peek().or_else(|| self.tokens.last());
             let (line, column) = token
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
-            return Err(FarmError::new(
-                "expected `=` in let statement",
-                line,
-                column,
-            ));
+            return Err(FarmError::new("let 文には `=` が必要です", line, column));
         }
 
-        let value = self.collect_expr_until_semicolon("expected `;` after let statement")?;
-        self.require_expr(&value, "expected value in let statement")?;
+        let value = self.collect_expr_until_semicolon("let 文の後に `;` が必要です")?;
+        self.require_expr(&value, "let 文には値が必要です")?;
         Ok(Stmt::Let { name, value })
     }
 
     fn parse_expr_or_assignment_stmt(&mut self) -> Result<Stmt, FarmError> {
-        let expr = self.collect_expr_until_semicolon("expected `;` after expression statement")?;
-        self.require_expr(&expr, "expected expression")?;
+        let expr = self.collect_expr_until_semicolon("式文の後に `;` が必要です")?;
+        self.require_expr(&expr, "式が必要です")?;
         let Some(index) = top_level_assignment_index(&expr) else {
             return Ok(Stmt::Expr(expr));
         };
@@ -249,11 +854,7 @@ impl<'a> Parser<'a> {
 
         if target.is_empty() || value.is_empty() {
             let token = self.previous();
-            return Err(FarmError::new(
-                "invalid assignment statement",
-                token.line,
-                token.column,
-            ));
+            return Err(FarmError::new("代入文が不正です", token.line, token.column));
         }
 
         Ok(Stmt::Assign { target, value })
@@ -261,26 +862,22 @@ impl<'a> Parser<'a> {
 
     fn collect_expr_until_semicolon(&mut self, missing_message: &str) -> Result<Expr, FarmError> {
         let mut tokens = Vec::new();
-        let mut depth = 0usize;
+        let mut depth = ExprDepth::default();
 
         while !self.is_eof() {
             let token = self.peek().expect("not eof").clone();
             match &token.kind {
-                TokenKind::Symbol(';') if depth == 0 => {
+                TokenKind::Symbol(';') if depth.is_top_level() => {
                     self.advance();
                     return Ok(Expr::new(tokens));
                 }
-                TokenKind::Symbol('}') if depth == 0 => {
+                TokenKind::Symbol('}') if depth.is_top_level() => {
                     return Err(FarmError::new(missing_message, token.line, token.column));
                 }
                 TokenKind::Comment(_) => {
                     return Err(FarmError::new(missing_message, token.line, token.column));
                 }
-                TokenKind::Symbol('(') => depth += 1,
-                TokenKind::Symbol(')') => {
-                    depth = depth.saturating_sub(1);
-                }
-                _ => {}
+                _ => depth.observe(&token.kind),
             }
 
             if let Some(expr_token) = token.expr_token() {
@@ -299,62 +896,21 @@ impl<'a> Parser<'a> {
         missing_message: &str,
     ) -> Result<Expr, FarmError> {
         let mut tokens = Vec::new();
-        let mut depth = 0usize;
+        let mut depth = ExprDepth::default();
 
         while !self.is_eof() {
             let token = self.peek().expect("not eof").clone();
             match &token.kind {
-                TokenKind::Symbol(value) if *value == symbol && depth == 0 => {
+                TokenKind::Symbol(value) if *value == symbol && depth.is_top_level() => {
                     return Ok(Expr::new(tokens));
                 }
-                TokenKind::Symbol('(') => depth += 1,
-                TokenKind::Symbol(')') => {
-                    depth = depth.saturating_sub(1);
-                }
-                TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth == 0 => {
+                TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth.is_top_level() => {
                     return Err(FarmError::new(missing_message, token.line, token.column));
                 }
                 TokenKind::Comment(_) => {
                     return Err(FarmError::new(missing_message, token.line, token.column));
                 }
-                _ => {}
-            }
-
-            if let Some(expr_token) = token.expr_token() {
-                tokens.push(expr_token);
-            }
-            self.advance();
-        }
-
-        let (line, column) = self.end_position();
-        Err(FarmError::new(missing_message, line, column))
-    }
-
-    fn collect_expr_until_operator(
-        &mut self,
-        operator: &str,
-        missing_message: &str,
-    ) -> Result<Expr, FarmError> {
-        let mut tokens = Vec::new();
-        let mut depth = 0usize;
-
-        while !self.is_eof() {
-            let token = self.peek().expect("not eof").clone();
-            match &token.kind {
-                TokenKind::Operator(value) if value == operator && depth == 0 => {
-                    return Ok(Expr::new(tokens));
-                }
-                TokenKind::Symbol('(') => depth += 1,
-                TokenKind::Symbol(')') => {
-                    depth = depth.saturating_sub(1);
-                }
-                TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth == 0 => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
-                }
-                TokenKind::Comment(_) => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
-                }
-                _ => {}
+                _ => depth.observe(&token.kind),
             }
 
             if let Some(expr_token) = token.expr_token() {
@@ -380,28 +936,256 @@ impl<'a> Parser<'a> {
     }
 
     fn reject_unsupported_starter(&self) -> Result<(), FarmError> {
-        let Some(token) = self.peek() else {
-            return Ok(());
-        };
+        Ok(())
+    }
 
-        if let TokenKind::Ident(value) = &token.kind {
+    fn match_use_statement(&mut self) -> Result<bool, FarmError> {
+        if !self.check_keyword("use") {
+            return Ok(false);
+        }
+
+        if self.check_prelude_import() {
+            self.pos += 7;
+            return Ok(true);
+        }
+
+        self.advance();
+        self.skip_statement_until_semicolon("use 文の後に `;` が必要です")?;
+        Ok(true)
+    }
+
+    fn check_prelude_import(&self) -> bool {
+        matches!(
+            (
+                self.tokens.get(self.pos).map(|token| &token.kind),
+                self.tokens.get(self.pos + 1).map(|token| &token.kind),
+                self.tokens.get(self.pos + 2).map(|token| &token.kind),
+                self.tokens.get(self.pos + 3).map(|token| &token.kind),
+                self.tokens.get(self.pos + 4).map(|token| &token.kind),
+                self.tokens.get(self.pos + 5).map(|token| &token.kind),
+                self.tokens.get(self.pos + 6).map(|token| &token.kind),
+            ),
+            (
+                Some(TokenKind::Ident(use_keyword)),
+                Some(TokenKind::Ident(crate_name)),
+                Some(TokenKind::Operator(first_colons)),
+                Some(TokenKind::Ident(module_name)),
+                Some(TokenKind::Operator(second_colons)),
+                Some(TokenKind::Operator(glob)),
+                Some(TokenKind::Symbol(';')),
+            ) if use_keyword == "use"
+                && crate_name == "farmrs"
+                && first_colons == "::"
+                && module_name == "prelude"
+                && second_colons == "::"
+                && glob == "*"
+        )
+    }
+
+    fn skip_statement_until_semicolon(&mut self, missing_message: &str) -> Result<(), FarmError> {
+        let mut depth = ExprDepth::default();
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match &token.kind {
+                TokenKind::Symbol(';') if depth.is_top_level() => {
+                    self.advance();
+                    return Ok(());
+                }
+                TokenKind::Symbol('}') if depth.is_top_level() => {
+                    return Err(FarmError::new(missing_message, token.line, token.column));
+                }
+                _ => depth.observe(&token.kind),
+            }
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new(missing_message, line, column))
+    }
+
+    fn match_visibility(&mut self) -> Result<bool, FarmError> {
+        if !self.match_keyword("pub") {
+            return Ok(false);
+        }
+
+        if self.check_symbol('(') {
+            self.skip_balanced_symbol('(', ')')?;
+        }
+
+        Ok(true)
+    }
+
+    fn skip_type_until_field_separator(&mut self, close: char) -> Result<(), FarmError> {
+        let mut depth = ExprDepth::default();
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match &token.kind {
+                TokenKind::Symbol(',') if depth.is_top_level() => return Ok(()),
+                TokenKind::Symbol(value) if *value == close && depth.is_top_level() => {
+                    return Ok(());
+                }
+                TokenKind::Comment(_) => {
+                    return Err(FarmError::new(
+                        "型注釈が閉じられていません",
+                        token.line,
+                        token.column,
+                    ));
+                }
+                _ => depth.observe(&token.kind),
+            }
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new("型注釈が閉じられていません", line, column))
+    }
+
+    fn skip_until_item_separator(&mut self, close: char) -> Result<(), FarmError> {
+        let mut depth = ExprDepth::default();
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match &token.kind {
+                TokenKind::Symbol(',') if depth.is_top_level() => return Ok(()),
+                TokenKind::Symbol(value) if *value == close && depth.is_top_level() => {
+                    return Ok(());
+                }
+                _ => depth.observe(&token.kind),
+            }
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new("項目が閉じられていません", line, column))
+    }
+
+    fn collect_tokens_until_block(
+        &mut self,
+        missing_message: &str,
+    ) -> Result<Vec<TokenKind>, FarmError> {
+        let mut tokens = Vec::new();
+        let mut depth = ExprDepth::default();
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match &token.kind {
+                TokenKind::Symbol('{') if depth.is_top_level() => return Ok(tokens),
+                TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth.is_top_level() => {
+                    return Err(FarmError::new(missing_message, token.line, token.column));
+                }
+                _ => depth.observe(&token.kind),
+            }
+            tokens.push(token.kind);
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new(missing_message, line, column))
+    }
+
+    fn skip_item_header_and_block(&mut self, missing_message: &str) -> Result<(), FarmError> {
+        let mut depth = ExprDepth::default();
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match &token.kind {
+                TokenKind::Symbol(';') if depth.is_top_level() => {
+                    self.advance();
+                    return Ok(());
+                }
+                TokenKind::Symbol('{') if depth.is_top_level() => {
+                    self.skip_balanced_symbol('{', '}')?;
+                    return Ok(());
+                }
+                TokenKind::Symbol('}') if depth.is_top_level() => {
+                    return Err(FarmError::new(missing_message, token.line, token.column));
+                }
+                _ => depth.observe(&token.kind),
+            }
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new(missing_message, line, column))
+    }
+
+    fn skip_macro_item(&mut self) -> Result<(), FarmError> {
+        while !self.is_eof() {
             if matches!(
-                value.as_str(),
-                "trait"
-                    | "impl"
-                    | "macro"
-                    | "macro_rules"
-                    | "mod"
-                    | "use"
-                    | "struct"
-                    | "enum"
-                    | "crate"
+                self.peek().map(|token| &token.kind),
+                Some(TokenKind::Symbol('{'))
+                    | Some(TokenKind::Symbol('('))
+                    | Some(TokenKind::Symbol('['))
             ) {
-                return Err(FarmError::unsupported(value, token.line, token.column));
+                let (open, close) = match self.peek().expect("checked token exists").kind {
+                    TokenKind::Symbol('{') => ('{', '}'),
+                    TokenKind::Symbol('(') => ('(', ')'),
+                    TokenKind::Symbol('[') => ('[', ']'),
+                    _ => unreachable!(),
+                };
+                self.skip_balanced_symbol(open, close)?;
+                self.match_symbol(';');
+                return Ok(());
+            }
+
+            if self.match_symbol(';') {
+                return Ok(());
+            }
+
+            self.advance();
+        }
+
+        let (line, column) = self.end_position();
+        Err(FarmError::new(
+            "macro 定義が閉じられていません",
+            line,
+            column,
+        ))
+    }
+
+    fn skip_balanced_symbol(&mut self, open: char, close: char) -> Result<(), FarmError> {
+        self.expect_symbol(open)?;
+        let mut depth = 1usize;
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof").clone();
+            match token.kind {
+                TokenKind::Symbol(value) if value == open => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::Symbol(value) if value == close => {
+                    depth -= 1;
+                    self.advance();
+                    if depth == 0 {
+                        return Ok(());
+                    }
+                }
+                _ => self.advance(),
             }
         }
 
-        Ok(())
+        let (line, column) = self.end_position();
+        Err(FarmError::new(
+            format!("`{close}` が必要です"),
+            line,
+            column,
+        ))
+    }
+
+    fn peek_ident(&self, message: &str) -> Result<String, FarmError> {
+        let Some(token) = self.peek() else {
+            let (line, column) = self.end_position();
+            return Err(FarmError::new(message, line, column));
+        };
+
+        if let TokenKind::Ident(value) = &token.kind {
+            Ok(value.clone())
+        } else {
+            Err(FarmError::new(message, token.line, token.column))
+        }
     }
 
     fn expect_keyword(&mut self, keyword: &str) -> Result<(), FarmError> {
@@ -413,7 +1197,7 @@ impl<'a> Parser<'a> {
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
             Err(FarmError::new(
-                format!("expected `{keyword}`"),
+                format!("`{keyword}` が必要です"),
                 line,
                 column,
             ))
@@ -443,7 +1227,11 @@ impl<'a> Parser<'a> {
             let (line, column) = token
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
-            Err(FarmError::new(format!("expected `{symbol}`"), line, column))
+            Err(FarmError::new(
+                format!("`{symbol}` が必要です"),
+                line,
+                column,
+            ))
         }
     }
 
@@ -456,7 +1244,7 @@ impl<'a> Parser<'a> {
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
             Err(FarmError::new(
-                format!("expected `{operator}`"),
+                format!("`{operator}` が必要です"),
                 line,
                 column,
             ))
@@ -555,16 +1343,91 @@ impl<'a> Parser<'a> {
 }
 
 fn top_level_assignment_index(expr: &Expr) -> Option<usize> {
-    let mut depth = 0usize;
+    top_level_operator_index(expr, "=")
+}
 
+fn prefixed_name(namespace: &[String], name: &str) -> String {
+    if namespace.is_empty() {
+        return name.to_string();
+    }
+
+    let mut parts = namespace.to_vec();
+    parts.push(name.to_string());
+    parts.join("_")
+}
+
+fn infer_impl_target(tokens: &[TokenKind]) -> Option<String> {
+    let for_index = tokens
+        .iter()
+        .position(|token| matches!(token, TokenKind::Ident(value) if value == "for"));
+
+    let search = if let Some(index) = for_index {
+        &tokens[index + 1..]
+    } else {
+        tokens
+    };
+
+    search.iter().find_map(|token| match token {
+        TokenKind::Ident(value) if value != "for" => Some(value.clone()),
+        _ => None,
+    })
+}
+
+fn split_top_level_range(expr: &Expr) -> Option<(Expr, Expr)> {
+    let index = top_level_operator_index(expr, "..")?;
+    Some((
+        Expr::new(expr.tokens[..index].to_vec()),
+        Expr::new(expr.tokens[index + 1..].to_vec()),
+    ))
+}
+
+fn top_level_operator_index(expr: &Expr, target: &str) -> Option<usize> {
+    let mut depth = ExprDepth::default();
     for (index, token) in expr.tokens.iter().enumerate() {
         match token {
-            crate::ir::ExprToken::Symbol('(') => depth += 1,
-            crate::ir::ExprToken::Symbol(')') => depth = depth.saturating_sub(1),
-            crate::ir::ExprToken::Operator(op) if op == "=" && depth == 0 => return Some(index),
-            _ => {}
+            crate::ir::ExprToken::Operator(op) if op == target && depth.is_top_level() => {
+                return Some(index);
+            }
+            _ => depth.observe_expr(token),
         }
     }
 
     None
+}
+
+#[derive(Default)]
+struct ExprDepth {
+    paren: usize,
+    bracket: usize,
+    brace: usize,
+}
+
+impl ExprDepth {
+    fn is_top_level(&self) -> bool {
+        self.paren == 0 && self.bracket == 0 && self.brace == 0
+    }
+
+    fn observe(&mut self, token: &TokenKind) {
+        match token {
+            TokenKind::Symbol('(') => self.paren += 1,
+            TokenKind::Symbol(')') => self.paren = self.paren.saturating_sub(1),
+            TokenKind::Symbol('[') => self.bracket += 1,
+            TokenKind::Symbol(']') => self.bracket = self.bracket.saturating_sub(1),
+            TokenKind::Symbol('{') => self.brace += 1,
+            TokenKind::Symbol('}') => self.brace = self.brace.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    fn observe_expr(&mut self, token: &crate::ir::ExprToken) {
+        match token {
+            crate::ir::ExprToken::Symbol('(') => self.paren += 1,
+            crate::ir::ExprToken::Symbol(')') => self.paren = self.paren.saturating_sub(1),
+            crate::ir::ExprToken::Symbol('[') => self.bracket += 1,
+            crate::ir::ExprToken::Symbol(']') => self.bracket = self.bracket.saturating_sub(1),
+            crate::ir::ExprToken::Symbol('{') => self.brace += 1,
+            crate::ir::ExprToken::Symbol('}') => self.brace = self.brace.saturating_sub(1),
+            _ => {}
+        }
+    }
 }

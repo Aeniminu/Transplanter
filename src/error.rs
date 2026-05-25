@@ -18,11 +18,7 @@ impl FarmError {
     }
 
     pub fn unsupported(syntax: impl Into<String>, line: usize, column: usize) -> Self {
-        Self::new(
-            format!("unsupported syntax: {}", syntax.into()),
-            line,
-            column,
-        )
+        Self::new(format!("未対応構文: {}", syntax.into()), line, column)
     }
 }
 
@@ -30,8 +26,8 @@ impl fmt::Display for FarmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "error: {} at {}:{}",
-            self.message, self.line, self.column
+            "エラー: {}行{}列: {}",
+            self.line, self.column, self.message
         )
     }
 }
