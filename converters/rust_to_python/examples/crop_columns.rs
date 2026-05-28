@@ -13,8 +13,8 @@ fn tend_tile() {
 }
 
 fn main() {
-    for x in 0..4 {
-        for y in 0..4 {
+    for _x in 0..4 {
+        for _y in 0..4 {
             tend_tile();
             move_dir(Direction::North);
         }

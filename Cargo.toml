@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 autoexamples = false
 
+[workspace]
+members = [".", "converters/rust_to_python"]
+resolver = "3"
+
 [dependencies]
+transplanter_rust = { path = "converters/rust_to_python" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

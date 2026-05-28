@@ -2,7 +2,7 @@
 
 Transplanter、漢字圏では「耕訳機」は、[The Farmer Was Replaced](https://thefarmerwasreplaced.wiki.gg/) 向けの変換アプリです。
 
-現在入っている変換器は `Rust -> ゲーム用Python` です。Rustとして書いた `.rs` を `cargo check` で確認し、成功した場合だけゲームの Save フォルダへ `.py` を出力します。将来は `Lisp -> Python` など別の変換器を `src/converters/` に追加できる構成にしています。
+現在入っている変換器は `Rust -> ゲーム用Python` です。Rustとして書いた `.rs` を `cargo check` で確認し、成功した場合だけゲームの Save フォルダへ `.py` を出力します。将来は `Lisp -> Python` など別の変換器を `converters/` に追加できる構成にしています。
 
 これはゲーム内でRustを実行するツールではありません。Rustを書く練習をしながら、ゲームが読めるPython風コードを作るための道具です。
 
@@ -262,10 +262,10 @@ cargo build
 cargo test
 cargo build --release
 .\target\release\transplanter.exe --help
-.\target\release\transplanter.exe examples\basic.rs
-.\target\release\transplanter.exe examples\basic.rs -o output.py
-.\target\release\transplanter.exe examples\basic.rs --check
-.\target\release\transplanter.exe examples\crop_columns.rs --check
+.\target\release\transplanter.exe converters\rust_to_python\examples\basic.rs
+.\target\release\transplanter.exe converters\rust_to_python\examples\basic.rs -o output.py
+.\target\release\transplanter.exe converters\rust_to_python\examples\basic.rs --check
+.\target\release\transplanter.exe converters\rust_to_python\examples\crop_columns.rs --check
 .\target\release\transplanter.exe --sync
 .\target\release\transplanter.exe --init-ide
 ```
@@ -274,9 +274,14 @@ cargo build --release
 
 ## 開発者向けの構成
 
-Transplanter本体と変換器は分けています。別言語の変換器を足す場合は、まず `src/converters/` に新しいフォルダを追加し、`src/transplanter.rs` の `Converter` trait を実装する方針です。
+Transplanter本体と変換器は分けています。別言語の変換器を足す場合は、まず `converters/` に新しい crate を追加し、Transplanter本体側で `src/transplanter.rs` の `Converter` trait に接続する方針です。
 
 ```text
+converters/
+  rust_to_python/                 Rust -> ゲーム用Python 変換器crate
+    src/                          変換ロジックと transplanter_rust prelude
+    tests/                        変換器固有テスト
+    examples/                     Rust入力例
 src/
   main.rs                         起動だけ
   cli.rs                          コマンドライン引数と実行モード
@@ -286,8 +291,6 @@ src/
   paths.rs                        パス表示、toml文字列、既定フォルダ
   win_gui.rs                      Windows GUI
   transplanter.rs                 変換器共通の trait
-  converters/
-    rust_to_python/               現在の Rust -> ゲーム用Python 変換器
 ```
 
-`transplanter_rust` はユーザーの `.rs` をRustとして成立させるための空実装crateです。ゲーム内APIの実行を再現する場所ではありません。変換ロジックは `src/converters/rust_to_python/` 側にあります。
+`transplanter_rust` は Rust -> Python 変換器 crate の名前であり、同時にユーザーの `.rs` をRustとして成立させるための prelude を提供します。ゲーム内APIの実行を再現する場所ではありません。変換ロジックは `converters/rust_to_python/` 側にあります。

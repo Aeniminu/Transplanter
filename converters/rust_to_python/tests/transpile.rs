@@ -1,4 +1,4 @@
-use transplanter::compile_source;
+use transplanter_rust::compile_source;
 
 #[test]
 fn basic_loop() {

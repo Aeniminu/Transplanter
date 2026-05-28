@@ -6,8 +6,13 @@ version = 4
 name = "transplanter"
 version = "0.1.0"
 dependencies = [
+ "transplanter_rust",
  "windows-sys",
 ]
+
+[[package]]
+name = "transplanter_rust"
+version = "0.1.0"
 
 [[package]]
 name = "windows-sys"

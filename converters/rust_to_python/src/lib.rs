@@ -7,32 +7,29 @@ pub mod parser;
 pub mod prelude;
 mod strict;
 
-use crate::transplanter::Converter;
 pub use error::RustToPythonError;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RustToPython;
 
-impl Converter for RustToPython {
-    type Error = RustToPythonError;
-
-    fn name(&self) -> &'static str {
+impl RustToPython {
+    pub fn name(&self) -> &'static str {
         "rust-to-python"
     }
 
-    fn source_language(&self) -> &'static str {
+    pub fn source_language(&self) -> &'static str {
         "Rust"
     }
 
-    fn target_language(&self) -> &'static str {
+    pub fn target_language(&self) -> &'static str {
         "The Farmer Was Replaced Python"
     }
 
-    fn check(&self, source: &str) -> Result<(), Self::Error> {
+    pub fn check(&self, source: &str) -> Result<(), RustToPythonError> {
         parse_source(source).map(|_| ())
     }
 
-    fn compile(&self, source: &str) -> Result<String, Self::Error> {
+    pub fn compile(&self, source: &str) -> Result<String, RustToPythonError> {
         let program = parse_source(source)?;
         Ok(codegen::generate(&program))
     }

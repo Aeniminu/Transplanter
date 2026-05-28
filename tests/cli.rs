@@ -4,11 +4,12 @@ use std::process::Command;
 
 const EXPECTED_BASIC: &str =
     "while True:\n    if can_harvest():\n        harvest()\n    else:\n        move(East)\n";
+const BASIC_EXAMPLE: &str = "converters/rust_to_python/examples/basic.rs";
 
 #[test]
 fn example_basic_prints_expected_output() {
     let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
-        .arg("examples/basic.rs")
+        .arg(BASIC_EXAMPLE)
         .output()
         .expect("failed to run transplanter");
 
@@ -29,7 +30,7 @@ fn example_basic_writes_output_file() {
     ));
 
     let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
-        .arg("examples/basic.rs")
+        .arg(BASIC_EXAMPLE)
         .arg("-o")
         .arg(&output_path)
         .output()
@@ -134,7 +135,7 @@ fn unknown_option_returns_error() {
 #[test]
 fn missing_output_path_returns_error() {
     let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
-        .arg("examples/basic.rs")
+        .arg(BASIC_EXAMPLE)
         .arg("-o")
         .output()
         .expect("failed to run transplanter");
@@ -182,7 +183,7 @@ fn help_with_extra_unknown_option_returns_error() {
 #[test]
 fn check_flag_accepts_valid_input() {
     let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
-        .arg("examples/basic.rs")
+        .arg(BASIC_EXAMPLE)
         .arg("--check")
         .output()
         .expect("failed to run transplanter");
@@ -194,7 +195,7 @@ fn check_flag_accepts_valid_input() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "OK: examples/basic.rs\n"
+        format!("OK: {BASIC_EXAMPLE}\n")
     );
 }
 
@@ -322,7 +323,7 @@ fn check_flag_accepts_trait_declarations() {
 #[test]
 fn check_flag_rejects_output_path() {
     let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
-        .arg("examples/basic.rs")
+        .arg(BASIC_EXAMPLE)
         .arg("--check")
         .arg("-o")
         .arg("output.py")
@@ -621,7 +622,7 @@ fn sync_ignores_non_rs_extension() {
 fn sync_rejects_input_file_mix() {
     let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
-        .arg("examples/basic.rs")
+        .arg(BASIC_EXAMPLE)
         .output()
         .expect("failed to run transplanter");
 

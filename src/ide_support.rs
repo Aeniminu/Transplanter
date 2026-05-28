@@ -51,7 +51,7 @@ pub fn write_support_crate(project_dir: &Path) -> Result<(), String> {
     let prelude_path = src_support_dir.join("prelude.rs");
     fs::write(
         &prelude_path,
-        include_str!("converters/rust_to_python/prelude.rs"),
+        include_str!("../converters/rust_to_python/src/prelude.rs"),
     )
     .map_err(|err| {
         format!(
