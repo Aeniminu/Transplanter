@@ -31,7 +31,7 @@ Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampo
 
 開いた場所に `__builtins__.py` や既存の `.py` が見えていれば、そのフォルダが指定先です。`Saves` という親フォルダではなく、実際に `.py` が入っているセーブ個別のフォルダを指定してください。
 
-Saves/save0   など
+Saves/Save0   など
 
 ## アップデート
 
