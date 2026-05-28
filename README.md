@@ -1,12 +1,45 @@
 # Transplanter / 耕訳機
+※現在は、Windows専用です。
 
-Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampowered.com/app/2060160/_Replace/?l=japanese) 向けの非公式変換アプリです。
+Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampowered.com/app/2060160/_Replace/?l=japanese) でPythonのみならず別の言語でもプログラミング学習を楽しむための、非公式変換アプリです。
 
-現在入っている変換器は `Rust -> ゲーム用Python` です。Rustとして書いた `.rs` を `cargo check` で確認し、成功した場合だけゲームの Save フォルダへ `.py` を出力します。将来は `Lisp -> Python` など別の変換器を `converters/` に追加できる構成にしています。
+現在入っている変換器は `Rust -> ゲーム用Python` です。これはRustとして書いた `.rs` を `cargo check` で確認し、成功した場合だけゲームの Save フォルダへ `.py` を出力します。
+将来的には `Lisp -> Python` など別の変換器を `converters/` に追加できる構成にして行きたいなとか思っています。
 
-これはゲーム内でRustを実行するツールではありません。Rustを書く練習をしながら、ゲームが読めるPython風コードに変換するための道具です。
+※これはゲーム内のウィンドウで別言語を実行するためのツールではありません。主にIDEなどを用いながら別言語のコードを書いていただき、保存したらゲームで使用できるPython風コードに反映されるという形をとっています。
 
-現在は、Windows専用です。
+
+## 入手と初回セットアップ
+1. 最新リリースの `Assets` から Windows 用の `Transplanter.exe` をダウンロードし、実プレイ用の作業フォルダへ置きます。
+2.  `C:\Users\YourName\Desktop\farming` のようなお好きな作業フォルダを作ります。
+3. その中に `Transplanter.exe` を置きます。
+4. `Transplanter.exe` をダブルクリックします。
+5. (自動)初回起動時に `transplanter.toml`、`Cargo.toml`、`rs_src/main.rs`、`.transplanter_ide/` などの必要なものが自動作成され、ウィンドウ上段の `rs_src のパス` が作業フォルダ内の `rs_src` を自動的に指定します。
+6. ウィンドウ下段の `ゲームの Save フォルダ` に、ゲーム側のセーブフォルダを指定します。
+7. 既に自動生成されているrs_src/main.rsなんかを編集・保存すると、ゲームに反映されているようになっているはずです。後はご自由にお楽しみください。
+
+Saveフォルダが空欄の間は変換監視を開始しません。Saveフォルダを指定すると、`main.rs` を保存するたびに `cargo check` と変換が走ります。Rustとして間違っている場合、対応する `.py` は更新されません。
+ここまで
+
+## Save フォルダの見つけ方
+
+[公式 Wiki の External Editor](https://thefarmerwasreplaced.wiki.gg/wiki/External_editor) では、外部エディタ用の Save フォルダはゲーム内の `Load` メニューにある `Open Folder` ボタンから開ける、と説明されています。
+
+1. The Farmer Was Replaced を起動します。
+2. `Load` メニューを開きます。
+3. 使いたいセーブを選びます。
+4. `Open Folder` を押します。
+5. 開いたフォルダのパスを、Transplanter のウィンドウ下段に指定します。
+
+開いた場所に `__builtins__.py` や既存の `.py` が見えていれば、そのフォルダが指定先です。`Saves` という親フォルダではなく、実際に `.py` が入っているセーブ個別のフォルダを指定してください。
+
+## アップデート
+
+Transplanter は起動時に GitHub Releases の最新版を確認します。今使っている exe より新しいリリースがある場合だけ、ウィンドウ上部に `更新しますか？` ボタンが表示されます。それ押せば更新されます。
+
+作業フォルダの.exeを最新バージョンのexeファイルに差し替えることで、手動で行うこともできます。
+
+## 以下は解説！
 
 ## どう動くか
 
@@ -31,39 +64,6 @@ Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampo
 ```
 
 `rs_src` は自分が書く場所です。ゲームはここを直接読みません。ゲームが読むのは Save フォルダ内の `main.py` です。
-
-## 入手と初回セットアップ
-最新リリースの `Assets` から Windows 用の `Transplanter.exe` をダウンロードし、実プレイ用の作業フォルダへ置きます。
-
-1.  `C:\Users\YourName\Desktop\farming` のようなお好きな作業フォルダを作ります。
-2. その中に `Transplanter.exe` を置きます。
-3. `Transplanter.exe` をダブルクリックします。
-4. 【自動】初回起動時に `transplanter.toml`、`Cargo.toml`、`rs_src/main.rs`、`.transplanter_ide/` などの必要なものが自動作成され、ウィンドウ上段の `rs_src のパス` が作業フォルダ内の `rs_src` を自動的に指定します。
-7. ウィンドウ下段の `ゲームの Save フォルダ` に、ゲーム側のセーブフォルダを指定します。
-8. あとはご自由にお楽しみください。
-
-Saveフォルダが空欄の間は変換監視を開始しません。Saveフォルダを指定すると、`main.rs` を保存するたびに `cargo check` と変換が走ります。Rustとして間違っている場合、対応する `.py` は更新されません。
-ここまで
-
-## Save フォルダの見つけ方
-
-[公式 Wiki の External Editor](https://thefarmerwasreplaced.wiki.gg/wiki/External_editor) では、外部エディタ用の Save フォルダはゲーム内の `Load` メニューにある `Open Folder` ボタンから開ける、と説明されています。
-
-1. The Farmer Was Replaced を起動します。
-2. `Load` メニューを開きます。
-3. 使いたいセーブを選びます。
-4. `Open Folder` を押します。
-5. 開いたフォルダのパスを、Transplanter のウィンドウ下段に指定します。
-
-開いた場所に `__builtins__.py` や既存の `.py` が見えていれば、そのフォルダが指定先です。`Saves` という親フォルダではなく、実際に `.py` が入っているセーブ個別のフォルダを指定してください。
-
-## アップデート
-
-Transplanter は起動時に GitHub Releases の最新版を確認します。今使っている exe より新しいリリースがある場合だけ、ウィンドウ上部に `更新しますか？` ボタンが表示されます。それ押せば更新されます。
-
-作業フォルダの.exeを最新バージョンのexeファイルに差し替えることで、手動で行うこともできます。
-
-## 以下は解説！
 
 ## main.rs の最小例
 
