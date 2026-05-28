@@ -15,9 +15,11 @@ Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampo
 3. `Transplanter.exe` をダブルクリックします。
 4. (自動)初回起動時に `transplanter.toml`、`Cargo.toml`、`rs_src/main.rs`、`.transplanter_ide/` などの必要なものが自動作成され、ウィンドウ上段の `rs_src のパス` が作業フォルダ内の `rs_src` を自動的に指定します。
 5. ウィンドウ下段の `ゲームの Save フォルダ` に、ゲーム側の Save フォルダを指定します。
-6. 既に自動生成されているrs_src/main.rsなんかを編集・保存すると、ゲームに反映されているようになっているはずです。後はご自由にお楽しみください。
+6. 既に自動生成されているrs_src/main.rsなんかを編集・保存すると、ゲームに反映されているようになっているはずです。
 
-Saveフォルダが空欄の間は変換監視を開始しません。Saveフォルダを指定すると、`main.rs` を保存するたびに `cargo check` と変換が走ります。Rustとして間違っている場合、対応する `.py` は更新されません。
+後はご自由にお楽しみください！！
+
+※Saveフォルダが空欄の間は変換監視を開始しません。Saveフォルダを指定すると、`main.rs` を保存するたびに `cargo check` と変換が走ります。Rustとして間違っている場合、対応する `.py` は更新されません。
 ここまで
 
 ## ゲーム側の Save フォルダの見つけ方
