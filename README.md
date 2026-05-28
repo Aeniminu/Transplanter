@@ -23,8 +23,6 @@ Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampo
 
 ## ゲーム側の Save フォルダの見つけ方
 
-[公式 Wiki の External Editor](https://thefarmerwasreplaced.wiki.gg/wiki/External_editor) では、外部エディタ用の Save フォルダはゲーム内の `Load` メニューにある `Open Folder` ボタンから開ける、と説明されています。
-
 1. The Farmer Was Replaced を起動します。
 2. `Load` メニューを開きます。
 3. 使いたいセーブを選びます。
