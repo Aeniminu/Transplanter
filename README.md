@@ -11,7 +11,7 @@ Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampo
 
 ## 入手と初回セットアップ
 1. `C:\Users\YourName\Desktop\farming` のようなお好きな作業フォルダを作ります。
-2. 最新リリースの `Assets` から Windows 用の `Transplanter.exe` をダウンロードし、実プレイ用の作業フォルダへ置きます。
+2. 最新リリースの `Assets` から Windows 用の `Transplanter.exe` をダウンロードし、その作業フォルダへ置きます。
 3. その中に `Transplanter.exe` を置きます。
 4. `Transplanter.exe` をダブルクリックします。
 5. (自動)初回起動時に `transplanter.toml`、`Cargo.toml`、`rs_src/main.rs`、`.transplanter_ide/` などの必要なものが自動作成され、ウィンドウ上段の `rs_src のパス` が作業フォルダ内の `rs_src` を自動的に指定します。
