@@ -20,7 +20,6 @@ Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampo
 後はご自由にお楽しみください！！
 
 ※Saveフォルダが空欄の間は変換監視を開始しません。Saveフォルダを指定すると、`main.rs` を保存するたびに `cargo check` と変換が走ります。Rustとして間違っている場合、対応する `.py` は更新されません。
-ここまで
 
 ## ゲーム側の Save フォルダの見つけ方
 
