@@ -42,3 +42,15 @@ pub fn compile_source(source: &str) -> Result<String, RustToPythonError> {
 pub fn check_source(source: &str) -> Result<(), RustToPythonError> {
     rust_to_python_transplanter().check(source)
 }
+
+pub fn compile_module_source(source: &str) -> Result<String, RustToPythonError> {
+    transplanter_rust::compile_module_source(source)
+}
+
+pub fn check_module_source(source: &str) -> Result<(), RustToPythonError> {
+    transplanter_rust::check_module_source(source)
+}
+
+pub fn external_modules(source: &str) -> Result<Vec<String>, RustToPythonError> {
+    transplanter_rust::external_modules(source)
+}

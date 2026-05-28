@@ -1,3 +1,4 @@
+use super::OutputMode;
 use super::error::RustToPythonError;
 use super::ir::{
     Constant, ElseBranch, Expr, Function, FunctionParam, NamespaceAlias, Program, Stmt,
@@ -6,18 +7,25 @@ use super::ir::{
 use super::lexer::{Token, TokenKind};
 use super::strict;
 
-pub fn parse(tokens: &[Token]) -> Result<Program, RustToPythonError> {
-    Parser { tokens, pos: 0 }.parse_program()
+pub fn parse(tokens: &[Token], mode: OutputMode) -> Result<Program, RustToPythonError> {
+    Parser {
+        tokens,
+        pos: 0,
+        mode,
+    }
+    .parse_program()
 }
 
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    mode: OutputMode,
 }
 
 impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Result<Program, RustToPythonError> {
         let mut constants = Vec::new();
+        let mut external_modules = Vec::new();
         let mut struct_factories = Vec::new();
         let mut namespace_aliases = Vec::new();
         let mut functions = Vec::new();
@@ -32,6 +40,7 @@ impl<'a> Parser<'a> {
 
             if self.match_metadata_item(
                 &[],
+                &mut external_modules,
                 &mut constants,
                 &mut struct_factories,
                 &mut namespace_aliases,
@@ -44,7 +53,7 @@ impl<'a> Parser<'a> {
             self.expect_keyword("fn")?;
             let function = self.parse_function_after_fn()?;
 
-            if function.name == "main" {
+            if function.name == "main" && self.mode == OutputMode::Entry {
                 if !function.params.is_empty() {
                     let token = self.previous();
                     return Err(RustToPythonError::new(
@@ -67,7 +76,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let Some(main) = main else {
+        if main.is_none() && self.mode == OutputMode::Entry {
             let (line, column) = self.end_position();
             return Err(RustToPythonError::new(
                 "`fn main` がありません",
@@ -77,6 +86,7 @@ impl<'a> Parser<'a> {
         };
 
         Ok(Program {
+            external_modules,
             constants,
             struct_factories,
             namespace_aliases,
@@ -302,6 +312,7 @@ impl<'a> Parser<'a> {
     fn match_metadata_item(
         &mut self,
         namespace: &[String],
+        external_modules: &mut Vec<String>,
         constants: &mut Vec<Constant>,
         struct_factories: &mut Vec<StructFactory>,
         namespace_aliases: &mut Vec<NamespaceAlias>,
@@ -320,6 +331,7 @@ impl<'a> Parser<'a> {
         if self.match_keyword("mod") {
             self.parse_module_item(
                 namespace,
+                external_modules,
                 constants,
                 struct_factories,
                 namespace_aliases,
@@ -526,6 +538,7 @@ impl<'a> Parser<'a> {
     fn parse_module_item(
         &mut self,
         namespace: &[String],
+        external_modules: &mut Vec<String>,
         constants: &mut Vec<Constant>,
         struct_factories: &mut Vec<StructFactory>,
         namespace_aliases: &mut Vec<NamespaceAlias>,
@@ -533,6 +546,9 @@ impl<'a> Parser<'a> {
     ) -> Result<(), RustToPythonError> {
         let module_name = self.expect_ident("module 名が必要です")?;
         if self.match_symbol(';') {
+            if namespace.is_empty() {
+                external_modules.push(module_name);
+            }
             return Ok(());
         }
 
@@ -557,6 +573,7 @@ impl<'a> Parser<'a> {
             self.match_visibility()?;
             if self.match_metadata_item(
                 &child_namespace,
+                external_modules,
                 constants,
                 struct_factories,
                 namespace_aliases,

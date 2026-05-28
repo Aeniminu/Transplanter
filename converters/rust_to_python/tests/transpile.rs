@@ -1,4 +1,4 @@
-use transplanter_rust::compile_source;
+use transplanter_rust::{compile_module_source, compile_source};
 
 #[test]
 fn basic_loop() {
@@ -169,6 +169,56 @@ fn main() {
 "#;
 
     assert_eq!(compile_source(source).unwrap(), "harvest()\n");
+}
+
+#[test]
+fn external_module_declaration_becomes_python_import() {
+    let source = r#"
+mod farmlab;
+
+fn main() {
+    farmlab::main();
+}
+"#;
+
+    assert_eq!(
+        compile_source(source).unwrap(),
+        "import farmlab\n\nfarmlab.main()\n"
+    );
+}
+
+#[test]
+fn module_mode_keeps_main_as_function() {
+    let source = r#"
+use transplanter_rust::prelude::*;
+
+pub fn main() {
+    print("test_text");
+}
+"#;
+
+    assert_eq!(
+        compile_module_source(source).unwrap(),
+        "def main():\n    print(\"test_text\")\n"
+    );
+}
+
+#[test]
+fn module_mode_allows_file_without_main() {
+    let source = r#"
+use transplanter_rust::prelude::*;
+
+pub fn water() {
+    if get_water() < 1.0 {
+        use_item(Item::Water);
+    }
+}
+"#;
+
+    assert_eq!(
+        compile_module_source(source).unwrap(),
+        "def water():\n    if get_water() < 1.0:\n        use_item(Items.Water)\n"
+    );
 }
 
 #[test]

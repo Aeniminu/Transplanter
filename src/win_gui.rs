@@ -16,6 +16,7 @@ use crate::project::{
     FileStamp, compile_project_file, output_path_for, snapshot_output_files, snapshot_source_files,
     sync_project,
 };
+use crate::updater::{self, ReleaseInfo};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateRoundRectRgn,
@@ -37,12 +38,12 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     ES_AUTOHSCROLL, GWLP_USERDATA, GetCursorPos, GetDlgCtrlID, GetMessageW, GetWindowLongPtrW,
-    GetWindowTextW, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW, LoadCursorW, MSG, PostQuitMessage,
-    RegisterClassW, SW_MINIMIZE, SW_SHOW, SendMessageW, SetTimer, SetWindowLongPtrW,
-    SetWindowTextW, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN,
-    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_NCDESTROY,
-    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CHILD, WS_POPUP, WS_TABSTOP,
-    WS_VISIBLE,
+    GetWindowTextW, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW, IDYES, LoadCursorW, MB_ICONINFORMATION,
+    MB_YESNO, MSG, MessageBoxW, PostQuitMessage, RegisterClassW, SW_HIDE, SW_MINIMIZE, SW_SHOW,
+    SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC,
+    WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETFONT,
+    WM_TIMER, WNDCLASSW, WS_CHILD, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
 const CLASS_NAME: &str = "transplanter_window";
@@ -65,6 +66,7 @@ const ID_SRC_EDIT: i32 = 101;
 const ID_OUT_EDIT: i32 = 102;
 const ID_SRC_BROWSE: i32 = 201;
 const ID_OUT_BROWSE: i32 = 202;
+const ID_UPDATE: i32 = 203;
 const ID_MINIMIZE: i32 = 204;
 const ID_CLOSE: i32 = 205;
 const ID_SRC_LABEL: i32 = 401;
@@ -185,6 +187,8 @@ impl Theme {
 struct Config {
     src_dir: String,
     out_dir: String,
+    last_release_tag: String,
+    last_release_notes: String,
 }
 
 struct GuiState {
@@ -198,6 +202,9 @@ struct GuiState {
     last_out_text: String,
     active: bool,
     spinner: usize,
+    update_check_started: bool,
+    update_busy: bool,
+    update: Option<ReleaseInfo>,
 }
 
 struct WatchHandle {
@@ -229,6 +236,9 @@ impl ControlRect {
 enum GuiEvent {
     Status(String),
     Error(String),
+    UpdateAvailable(ReleaseInfo),
+    UpdateUnavailable(ReleaseInfo),
+    UpdateReady(PathBuf),
 }
 
 pub fn detach_console() {
@@ -327,6 +337,9 @@ impl GuiState {
             rx,
             active: false,
             spinner: 0,
+            update_check_started: false,
+            update_busy: false,
+            update: None,
         }
     }
 }
@@ -360,6 +373,7 @@ unsafe extern "system" fn wnd_proc(
             if (*state_ptr).startup_error.is_none() {
                 save_config_and_start(hwnd);
             }
+            start_update_check(hwnd);
             0
         }
         WM_COMMAND => {
@@ -367,6 +381,7 @@ unsafe extern "system" fn wnd_proc(
             match id {
                 ID_SRC_BROWSE => browse_and_set_path(hwnd, ID_SRC_EDIT, true),
                 ID_OUT_BROWSE => browse_and_set_path(hwnd, ID_OUT_EDIT, false),
+                ID_UPDATE => handle_update_clicked(hwnd),
                 ID_MINIMIZE => {
                     ShowWindow(hwnd, SW_MINIMIZE);
                 }
@@ -435,6 +450,14 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
         ControlRect::new(486, 6, 29, 28),
         ID_CLOSE,
+    );
+    create_control(
+        hwnd,
+        "BUTTON",
+        "更新あり",
+        WS_CHILD | WS_TABSTOP | BS_OWNERDRAW as u32,
+        ControlRect::new(312, 6, 132, 28),
+        ID_UPDATE,
     );
     create_control(
         hwnd,
@@ -727,6 +750,96 @@ unsafe fn choose_folder(hwnd: HWND) -> Option<String> {
     Some(string_from_wide_buffer(&path_buf))
 }
 
+unsafe fn start_update_check(hwnd: HWND) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+    if state.update_check_started {
+        return;
+    }
+    state.update_check_started = true;
+
+    let tx = state.tx.clone();
+    thread::spawn(move || match updater::check_for_update() {
+        Ok(check) if check.update_available => {
+            let _ = tx.send(GuiEvent::UpdateAvailable(check.latest));
+        }
+        Ok(check) => {
+            let _ = tx.send(GuiEvent::UpdateUnavailable(check.latest));
+        }
+        Err(err) => send_error(&tx, err),
+    });
+}
+
+unsafe fn handle_update_clicked(hwnd: HWND) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+    if state.update_busy {
+        return;
+    }
+
+    let Some(release) = state.update.clone() else {
+        return;
+    };
+    let notes = if release.notes.trim().is_empty() {
+        "リリースノートはありません。".to_string()
+    } else {
+        release.notes.clone()
+    };
+    let message = format!(
+        "Transplanter {} が利用できます。\n\n{}\n\n更新しますか？",
+        release.tag, notes
+    );
+    let title = wide("Transplanter 更新");
+    let message = wide(&message);
+    let answer = MessageBoxW(
+        hwnd,
+        message.as_ptr(),
+        title.as_ptr(),
+        MB_YESNO | MB_ICONINFORMATION,
+    );
+    if answer != IDYES {
+        return;
+    }
+
+    state.update_busy = true;
+    set_update_button_text(hwnd, "取得中");
+    let tx = state.tx.clone();
+    let exe_dir = exe_dir();
+    thread::spawn(move || match updater::download_update(&release, &exe_dir) {
+        Ok(path) => {
+            let _ = tx.send(GuiEvent::UpdateReady(path));
+        }
+        Err(err) => send_error(&tx, err),
+    });
+}
+
+unsafe fn show_update_button(hwnd: HWND, release: &ReleaseInfo) {
+    set_update_button_text(hwnd, &format!("更新 {}", release.tag));
+    let button = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, ID_UPDATE);
+    if !button.is_null() {
+        ShowWindow(button, SW_SHOW);
+        InvalidateRect(button, null(), 1);
+    }
+}
+
+unsafe fn hide_update_button(hwnd: HWND) {
+    let button = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, ID_UPDATE);
+    if !button.is_null() {
+        ShowWindow(button, SW_HIDE);
+    }
+}
+
+unsafe fn set_update_button_text(hwnd: HWND, text: &str) {
+    let button = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, ID_UPDATE);
+    if button.is_null() {
+        return;
+    }
+    set_window_text(button, text);
+    InvalidateRect(button, null(), 1);
+}
+
 unsafe fn save_if_edits_changed(hwnd: HWND) {
     let src = get_control_text(hwnd, ID_SRC_EDIT);
     let out = get_control_text(hwnd, ID_OUT_EDIT);
@@ -756,6 +869,8 @@ unsafe fn save_config_and_start(hwnd: HWND) {
     let config = Config {
         src_dir: state.config.src_dir.trim().to_string(),
         out_dir: state.config.out_dir.trim().to_string(),
+        last_release_tag: state.config.last_release_tag.clone(),
+        last_release_notes: state.config.last_release_notes.clone(),
     };
     state.config = config.clone();
 
@@ -852,15 +967,27 @@ fn watch_loop(
             send_error(&tx, err);
         }
 
-        for (input_path, stamp) in &current_sources {
+        let source_changed = current_sources
+            .iter()
+            .any(|(input_path, stamp)| seen_sources.get(input_path) != Some(stamp));
+        if current_sources.keys().ne(seen_sources.keys()) || source_changed {
+            match sync_project(&src_dir, &out_dir) {
+                Ok(count) => send_status(&tx, format!("OK: {count} 件を更新しました")),
+                Err(err) => send_error(&tx, err),
+            }
+            seen_sources = current_sources;
+            seen_outputs = snapshot_outputs_or_report(&src_dir, &out_dir, &seen_sources, &tx);
+            continue;
+        }
+
+        for input_path in current_sources.keys() {
             let Ok(output_path) = output_path_for(&src_dir, &out_dir, input_path) else {
                 continue;
             };
-            let source_changed = seen_sources.get(input_path) != Some(stamp);
             let output_changed =
                 seen_outputs.get(&output_path) != current_outputs.get(&output_path);
 
-            if source_changed || output_changed {
+            if output_changed {
                 match compile_project_file(&src_dir, &out_dir, input_path) {
                     Ok(output_path) => send_status(
                         &tx,
@@ -982,6 +1109,48 @@ unsafe fn drain_events(hwnd: HWND) {
         match event {
             GuiEvent::Status(message) => set_status(hwnd, &message),
             GuiEvent::Error(message) => set_status(hwnd, &message),
+            GuiEvent::UpdateAvailable(release) => handle_update_available(hwnd, release),
+            GuiEvent::UpdateUnavailable(release) => handle_update_unavailable(hwnd, release),
+            GuiEvent::UpdateReady(path) => handle_update_ready(hwnd, path),
+        }
+    }
+}
+
+unsafe fn handle_update_available(hwnd: HWND, release: ReleaseInfo) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+    state.config.last_release_tag = release.tag.clone();
+    state.config.last_release_notes = release.notes.clone();
+    state.update = Some(release.clone());
+    let _ = write_config(&state.config_path, &state.config);
+    show_update_button(hwnd, &release);
+    set_status(hwnd, &format!("更新があります: {}", release.tag));
+}
+
+unsafe fn handle_update_unavailable(hwnd: HWND, release: ReleaseInfo) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+    state.config.last_release_tag = release.tag;
+    state.config.last_release_notes = release.notes;
+    let _ = write_config(&state.config_path, &state.config);
+    hide_update_button(hwnd);
+}
+
+unsafe fn handle_update_ready(hwnd: HWND, path: PathBuf) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+    match updater::launch_update_script(&path) {
+        Ok(()) => {
+            set_status(hwnd, "更新を適用しています");
+            DestroyWindow(hwnd);
+        }
+        Err(err) => {
+            state.update_busy = false;
+            set_update_button_text(hwnd, "更新あり");
+            set_status(hwnd, &err);
         }
     }
 }
@@ -1065,6 +1234,7 @@ fn default_initial_config(config_path: &Path) -> Config {
     Config {
         src_dir: base_dir.join("rs_src").to_string_lossy().into_owned(),
         out_dir: String::new(),
+        ..Config::default()
     }
 }
 
@@ -1117,9 +1287,11 @@ fn write_config(path: &Path, config: &Config) -> Result<(), String> {
 
 fn render_config(config: &Config) -> String {
     format!(
-        "src_dir = {}\nout_dir = {}\n",
+        "src_dir = {}\nout_dir = {}\nlast_release_tag = {}\nlast_release_notes = {}\n",
         toml_string(&config.src_dir),
-        toml_string(&config.out_dir)
+        toml_string(&config.out_dir),
+        toml_string(&config.last_release_tag),
+        toml_string(&config.last_release_notes)
     )
 }
 
@@ -1138,6 +1310,8 @@ fn parse_config(contents: &str) -> Result<Config, String> {
         match key {
             "src_dir" => config.src_dir = value,
             "out_dir" => config.out_dir = value,
+            "last_release_tag" => config.last_release_tag = value,
+            "last_release_notes" => config.last_release_notes = value,
             _ => {}
         }
     }
@@ -1227,6 +1401,8 @@ mod tests {
             src_dir: r"C:\Users\Player\Desktop\farming\rs_src".to_string(),
             out_dir: r"C:\Users\Player\AppData\LocalLow\TheFarmerWasReplaced\Saves\Rust"
                 .to_string(),
+            last_release_tag: "v0.1.1".to_string(),
+            last_release_notes: "更新内容".to_string(),
         };
         let rendered = render_config(&config);
         assert_eq!(parse_config(&rendered).unwrap(), config);
@@ -1364,8 +1540,13 @@ mod tests {
     }
 
     fn recv_event_text(rx: &mpsc::Receiver<GuiEvent>) -> String {
-        match rx.recv_timeout(Duration::from_secs(3)).unwrap() {
-            GuiEvent::Status(message) | GuiEvent::Error(message) => message,
+        loop {
+            match rx.recv_timeout(Duration::from_secs(3)).unwrap() {
+                GuiEvent::Status(message) | GuiEvent::Error(message) => return message,
+                GuiEvent::UpdateAvailable(_)
+                | GuiEvent::UpdateUnavailable(_)
+                | GuiEvent::UpdateReady(_) => {}
+            }
         }
     }
 

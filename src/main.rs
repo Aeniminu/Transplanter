@@ -6,6 +6,10 @@ mod ide_support;
 mod paths;
 mod project;
 mod rust_check;
+mod rust_modules;
+
+#[cfg(windows)]
+mod updater;
 
 #[cfg(windows)]
 mod win_gui;

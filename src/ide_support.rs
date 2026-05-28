@@ -6,13 +6,15 @@ use crate::paths::{
     IDE_SUPPORT_CRATE_DIR, display_path, ensure_source_dir, project_dir_for_src_dir,
     relative_path_for_manifest, should_skip_source_dir, toml_string,
 };
+use crate::rust_modules::discover_module_files;
 
 pub fn write_manifest(src_dir: &Path) -> Result<PathBuf, String> {
     let project_dir = project_dir_for_src_dir(src_dir);
     let manifest_path = project_dir.join("Cargo.toml");
     write_support_crate(&project_dir)?;
     let rs_files = find_rs_files(src_dir)?;
-    let manifest = render_manifest(&project_dir, src_dir, &rs_files)?;
+    let module_files = discover_module_files(&rs_files)?;
+    let manifest = render_manifest(&project_dir, src_dir, &rs_files, &module_files)?;
     fs::write(&manifest_path, manifest).map_err(|err| {
         format!(
             "エラー: `{}` に書き込めません: {err}",
@@ -96,6 +98,7 @@ fn render_manifest(
     project_dir: &Path,
     src_dir: &Path,
     rs_files: &[PathBuf],
+    module_files: &BTreeSet<PathBuf>,
 ) -> Result<String, String> {
     let mut manifest = String::new();
     manifest.push_str("[package]\n");
@@ -112,6 +115,9 @@ fn render_manifest(
 
     let mut used_names = BTreeSet::new();
     for input_path in rs_files {
+        if module_files.contains(input_path) {
+            continue;
+        }
         let source_relative = input_path.strip_prefix(src_dir).map_err(|_| {
             format!(
                 "エラー: `{}` は `{}` の中にありません",

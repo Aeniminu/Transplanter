@@ -9,6 +9,7 @@ use crate::paths::{
     display_path, ensure_source_dir, format_compile_error, is_rs_file, should_skip_source_dir,
 };
 use crate::rust_check::validate_project;
+use crate::rust_modules::discover_module_files;
 
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -28,12 +29,18 @@ pub fn sync_project(src_dir: &Path, out_dir: &Path) -> Result<usize, String> {
     })?;
 
     let files = find_source_files(src_dir)?;
+    let module_files = discover_module_files(&files)?;
     for input_path in &files {
-        check_project_file(input_path)?;
+        check_project_file(input_path, module_files.contains(input_path))?;
     }
     validate_project(src_dir)?;
     for input_path in &files {
-        compile_project_file_unchecked(src_dir, out_dir, input_path)?;
+        compile_project_file_unchecked(
+            src_dir,
+            out_dir,
+            input_path,
+            module_files.contains(input_path),
+        )?;
     }
 
     Ok(files.len())
@@ -60,12 +67,22 @@ pub fn watch_project(src_dir: &Path, out_dir: &Path) -> Result<(), String> {
             write_manifest(src_dir)?;
         }
 
-        for (input_path, stamp) in &current {
+        let source_changed = current
+            .iter()
+            .any(|(input_path, stamp)| seen.get(input_path) != Some(stamp));
+        if current.keys().ne(seen.keys()) || source_changed {
+            let count = sync_project(src_dir, out_dir)?;
+            println!("OK: {count} 件を再同期しました");
+            seen = current;
+            seen_outputs = snapshot_output_files(src_dir, out_dir, seen.keys())?;
+            continue;
+        }
+
+        for input_path in current.keys() {
             let output_path = output_path_for(src_dir, out_dir, input_path)?;
-            let source_changed = seen.get(input_path) != Some(stamp);
             let output_changed =
                 seen_outputs.get(&output_path) != current_outputs.get(&output_path);
-            if source_changed || output_changed {
+            if output_changed {
                 let output_path = compile_project_file(src_dir, out_dir, input_path)?;
                 println!("OK: {} を変換しました", display_path(&output_path));
             }
@@ -81,7 +98,9 @@ pub fn compile_project_file(
     out_dir: &Path,
     input_path: &Path,
 ) -> Result<PathBuf, String> {
-    let output = compile_project_source(input_path)?;
+    let files = find_source_files(src_dir)?;
+    let module_files = discover_module_files(&files)?;
+    let output = compile_project_source(input_path, module_files.contains(input_path))?;
 
     if is_rs_file(input_path) {
         validate_project(src_dir)?;
@@ -137,19 +156,30 @@ fn compile_project_file_unchecked(
     src_dir: &Path,
     out_dir: &Path,
     input_path: &Path,
+    is_module: bool,
 ) -> Result<PathBuf, String> {
-    let output = compile_project_source(input_path)?;
+    let output = compile_project_source(input_path, is_module)?;
     write_project_output(src_dir, out_dir, input_path, output)
 }
 
-fn check_project_file(input_path: &Path) -> Result<(), String> {
+fn check_project_file(input_path: &Path, is_module: bool) -> Result<(), String> {
     let source = read_project_source(input_path)?;
-    transplanter::check_source(&source).map_err(|err| format_compile_error(input_path, err))
+    if is_module {
+        transplanter::check_module_source(&source)
+    } else {
+        transplanter::check_source(&source)
+    }
+    .map_err(|err| format_compile_error(input_path, err))
 }
 
-fn compile_project_source(input_path: &Path) -> Result<String, String> {
+fn compile_project_source(input_path: &Path, is_module: bool) -> Result<String, String> {
     let source = read_project_source(input_path)?;
-    transplanter::compile_source(&source).map_err(|err| format_compile_error(input_path, err))
+    if is_module {
+        transplanter::compile_module_source(&source)
+    } else {
+        transplanter::compile_source(&source)
+    }
+    .map_err(|err| format_compile_error(input_path, err))
 }
 
 fn read_project_source(input_path: &Path) -> Result<String, String> {

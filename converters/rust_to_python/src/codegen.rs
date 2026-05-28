@@ -1,13 +1,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::OutputMode;
 use super::api_map;
 use super::ir::{
     ElseBranch, Expr, ExprToken, Function, FunctionParam, Program, Stmt, StructFactory,
 };
 
-pub fn generate(program: &Program) -> String {
+pub fn generate(program: &Program, mode: OutputMode) -> String {
     let mut lines = Vec::new();
     let context = CodegenContext::new(program);
+
+    for module in &program.external_modules {
+        lines.push(format!("import {module}"));
+    }
+
+    if !program.external_modules.is_empty()
+        && (!program.constants.is_empty()
+            || !program.struct_factories.is_empty()
+            || !program.functions.is_empty()
+            || program.main.is_some())
+    {
+        lines.push(String::new());
+    }
 
     for constant in &program.constants {
         lines.push(format!("{} = {:?}", constant.name, constant.value));
@@ -29,7 +43,14 @@ pub fn generate(program: &Program) -> String {
         lines.push(String::new());
     }
 
-    emit_block(&mut lines, &program.main, 0, &context);
+    if mode == OutputMode::Entry {
+        emit_block(
+            &mut lines,
+            program.main.as_deref().unwrap_or(&[]),
+            0,
+            &context,
+        );
+    }
 
     while lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();

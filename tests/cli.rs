@@ -540,6 +540,92 @@ fn sync_keeps_subdirectory_layout() {
 }
 
 #[test]
+fn sync_outputs_external_module_as_importable_python_file() {
+    let workspace = temp_workspace("sync_external_module");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nmod farmlab;\n\nfn main() {\n    farmlab::main();\n}\n",
+    );
+    write_file(
+        &workspace.join("rs_src").join("farmlab.rs"),
+        "use transplanter_rust::prelude::*;\n\npub fn main() {\n    print(\"test_text\");\n}\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("main.py")).unwrap(),
+        "import farmlab\n\nfarmlab.main()\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("farmlab.py")).unwrap(),
+        "def main():\n    print(\"test_text\")\n"
+    );
+    assert!(
+        !fs::read_to_string(workspace.join("Cargo.toml"))
+            .unwrap()
+            .contains("path = \"rs_src/farmlab.rs\"")
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn sync_updates_external_module_as_module_file() {
+    let workspace = temp_workspace("sync_external_module_update");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nmod farmlab;\n\nfn main() {\n    farmlab::main();\n}\n",
+    );
+    let module_path = workspace.join("rs_src").join("farmlab.rs");
+    write_file(
+        &module_path,
+        "use transplanter_rust::prelude::*;\n\npub fn main() {\n    print(\"first\");\n}\n",
+    );
+
+    let first = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    write_file(
+        &module_path,
+        "use transplanter_rust::prelude::*;\n\npub fn main() {\n    print(\"second\");\n}\n",
+    );
+    let second = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+    assert!(
+        second.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("farmlab.py")).unwrap(),
+        "def main():\n    print(\"second\")\n"
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn sync_reports_japanese_file_position_for_invalid_source() {
     let workspace = temp_workspace("sync_invalid");
     write_file(
@@ -561,6 +647,29 @@ fn sync_reports_japanese_file_position_for_invalid_source() {
         stderr.contains("式文の後に `;` が必要です"),
         "stderr: {stderr}"
     );
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn sync_reports_missing_external_module_file() {
+    let workspace = temp_workspace("sync_missing_external_module");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nmod missing;\n\nfn main() {\n    missing::main();\n}\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("main.rs"), "stderr: {stderr}");
+    assert!(stderr.contains("mod missing;"), "stderr: {stderr}");
+    assert!(stderr.contains("missing.rs"), "stderr: {stderr}");
 
     let _ = fs::remove_dir_all(workspace);
 }

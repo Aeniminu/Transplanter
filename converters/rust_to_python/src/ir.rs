@@ -1,10 +1,11 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
+    pub external_modules: Vec<String>,
     pub constants: Vec<Constant>,
     pub struct_factories: Vec<StructFactory>,
     pub namespace_aliases: Vec<NamespaceAlias>,
     pub functions: Vec<Function>,
-    pub main: Vec<Stmt>,
+    pub main: Option<Vec<Stmt>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

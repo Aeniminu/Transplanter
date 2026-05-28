@@ -1,6 +1,6 @@
 # Transplanter / 耕訳機
 
-Transplanter、漢字圏では「耕訳機」は、[The Farmer Was Replaced](https://thefarmerwasreplaced.wiki.gg/) 向けの変換アプリです。
+Transplanter、漢字圏では「耕訳機」は、Steamゲーム [The Farmer Was Replaced](https://store.steampowered.com/app/2060160/_Replace/?l=japanese) 向けの非公式変換アプリです。
 
 現在入っている変換器は `Rust -> ゲーム用Python` です。Rustとして書いた `.rs` を `cargo check` で確認し、成功した場合だけゲームの Save フォルダへ `.py` を出力します。将来は `Lisp -> Python` など別の変換器を `converters/` に追加できる構成にしています。
 
@@ -18,10 +18,12 @@ Windows専用です。実プレイ用の好きなフォルダを1つ作り、そ
   .transplanter_ide/      Rust/Cursor補助用。自動作成
   rs_src/
     main.rs               あなたが編集するRustコード
+    farmlab.rs            必要なら分割したRustコード
 
 ゲームのSaveフォルダ/
   __builtins__.py         ゲーム側が作る補完用ファイル
   main.py                 Transplanterが出力するゲーム用コード
+  farmlab.py              分割ファイルがある場合の出力
 ```
 
 `rs_src` は自分が書く場所です。ゲームはここを直接読みません。ゲームが読むのは Save フォルダ内の `main.py` です。
@@ -39,7 +41,7 @@ Saveフォルダが空欄の間は変換監視を開始しません。Saveフォ
 
 ## Transplanter.exe の入手
 
-GitHub Releasesで配布されている場合は、最新リリースの `Assets` から Windows 用の `Transplanter.exe` をダウンロードし、実プレイ用の作業フォルダへ置きます。
+[GitHub Releases](https://github.com/Aeniminu/Transplanter/releases) で配布されている場合は、最新リリースの `Assets` から Windows 用の `Transplanter.exe` をダウンロードし、実プレイ用の作業フォルダへ置きます。
 
 自分でビルドする場合は、このリポジトリの `Cargo.toml` がある場所で次を実行します。
 
@@ -48,6 +50,14 @@ cargo build --release
 ```
 
 作成された `target\release\transplanter.exe` を `Transplanter.exe` として実プレイ用の作業フォルダへ置きます。
+
+## アップデート
+
+Transplanter は起動時に GitHub Releases の最新版を確認します。今使っている exe より新しいリリースがある場合だけ、ウィンドウ上部に `更新 vX.Y.Z` ボタンが表示されます。
+
+ボタンを押すとリリースノートが表示され、確認後に `Transplanter.exe.new` をダウンロードします。ダウンロード後はいったん Transplanter を終了し、更新用スクリプトが旧 exe を `.old` に退避してから新しい exe に差し替え、更新後の Transplanter を再起動します。失敗した場合は旧 exe を戻すようにしています。
+
+リリース運用では、`Cargo.toml` の `version = "0.1.1"` と GitHub Release tag の `v0.1.1` を揃えます。Release asset 名は常に `Transplanter.exe` にしてください。
 
 ## Save フォルダの見つけ方
 
@@ -88,6 +98,42 @@ while True:
 ```
 
 `use transplanter_rust::prelude::*;` はCursorなどのIDEで未定義エラーを減らすための行です。変換後の `.py` には出力されません。
+
+## ファイルを分ける場合
+
+`rs_src` の中では、Rustの `mod` と同じ感覚で同じフォルダの別ファイルを参照できます。
+
+```text
+rs_src/
+  main.rs
+  farmlab.rs
+```
+
+`main.rs`:
+
+```rust
+use transplanter_rust::prelude::*;
+
+mod farmlab;
+
+fn main() {
+    farmlab::main();
+}
+```
+
+`farmlab.rs`:
+
+```rust
+use transplanter_rust::prelude::*;
+
+pub fn main() {
+    print("test_text");
+}
+```
+
+出力は `main.py` と `farmlab.py` になります。`main.py` には `import farmlab` が入り、`farmlab::main();` は `farmlab.main()` になります。`farmlab.rs` 側の `pub fn main()` は自動実行されず、Pythonの `def main():` として出力されます。
+
+今の対応範囲は、同じフォルダにある `mod farmlab;` -> `farmlab.rs` です。`mod.rs` 形式やサブフォルダ module は今後の拡張候補です。
 
 ## transplanter.toml の役割
 
@@ -195,7 +241,6 @@ Rust は関数オーバーロードができないため、複数引数のゲー
 | `harvest()` | `harvest();` | `harvest()` | そのまま |
 | `can_harvest()` | `can_harvest()` | `can_harvest()` | 条件式で利用可能 |
 | `swap(direction)` | `swap(Direction::North);` | `swap(North)` | 方向は名前空間なしに変換 |
-| `range()` | `for i in 0..10 { ... }` | `for i in range(10):` | 入力で `range(10)` は使わない |
 | `plant(entity)` | `plant(Entity::Bush);` | `plant(Entities.Bush)` | 入力は単数 `Entity::X` |
 | `move(direction)` | `move_dir(Direction::East);` | `move(East)` | 入力は `move_dir(Direction::X)` |
 | `till()` | `till();` | `till()` | そのまま |
@@ -211,8 +256,8 @@ Rust は関数オーバーロードができないため、複数引数のゲー
 | `use_item(item, n=1)` | `use_item(Item::Fertilizer);` | `use_item(Items.Fertilizer)` | 回数指定は `use_item_n(Item::Fertilizer, 2);` |
 | `get_water()` | `get_water()` | `get_water()` | そのまま |
 | `do_a_flip()` | `do_a_flip();` | `do_a_flip()` | そのまま |
-| `print(something)` | `print(get_ground_type());` | `print(get_ground_type())` | そのまま |
-| `quick_print()` | `quick_print("hi");` | `quick_print("hi")` | そのまま |
+| `print(something)` | `print("soil");` | `print("soil")` | 値を画面に表示 |
+| `quick_print(something)` | `quick_print("hi");` | `quick_print("hi")` | 軽い表示に使う |
 | `len(collection)` | `len(xs)` | `len(xs)` | そのまま |
 | `num_items(item)` | `num_items(Item::Fertilizer)` | `num_items(Items.Fertilizer)` | そのまま |
 | `get_cost(thing)` | `get_cost(Unlock::Carrots)` | `get_cost(Unlocks.Carrots)` | そのまま |
@@ -224,7 +269,7 @@ Rust は関数オーバーロードができないため、複数引数のゲー
 | `measure()` | `measure();` | `measure()` | 方向指定は `measure_dir(Direction::North);` |
 | `min(a,b)` | `min(a, b)` | `min(a, b)` | そのまま |
 | `max(a,b)` | `max(a, b)` | `max(a, b)` | そのまま |
-| `abs(number)` | `abs(-1)` | `abs( - 1)` | Pythonとして有効 |
+| `abs(number)` | `abs(x)` | `abs(x)` | そのまま |
 | `random()` | `random()` | `random()` | そのまま |
 | `list()` | `let xs = list();` / `let xs = [1, 2];` | `xs = list()` / `xs = [1, 2]` | list は関数またはRust風配列で作る |
 | `set()` | `let seen = set();` | `seen = set()` | Python風 set リテラルは入力不可 |
@@ -286,9 +331,11 @@ src/
   main.rs                         起動だけ
   cli.rs                          コマンドライン引数と実行モード
   project.rs                      rs_src から Save フォルダへの同期・監視
+  rust_modules.rs                 mod 宣言と複数ファイル出力の判定
   rust_check.rs                   cargo check による Rust 検証
   ide_support.rs                  transplanter_rust 補助crate生成
   paths.rs                        パス表示、toml文字列、既定フォルダ
+  updater.rs                      GitHub Release の更新確認と差し替え準備
   win_gui.rs                      Windows GUI
   transplanter.rs                 変換器共通の trait
 ```
