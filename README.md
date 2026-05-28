@@ -111,7 +111,7 @@ use transplanter_rust::prelude::*;
 mod code0;
 
 fn main() {
-    code0::main();
+    code0::test();
 }
 ```
 
@@ -120,7 +120,7 @@ fn main() {
 ```rust
 use transplanter_rust::prelude::*;
 
-pub fn main() {
+pub fn test() {
     print("test_text");
 }
 ```
