@@ -331,10 +331,22 @@ fn init_ide_generates_manifest() {
 
     let manifest = fs::read_to_string(workspace.join("rs_src").join("Cargo.toml")).unwrap();
     assert!(manifest.contains("[dependencies]"), "{manifest}");
-    assert!(manifest.contains("farmrs = { path = "), "{manifest}");
+    assert!(
+        manifest.contains("farmrs = { path = \".farmrs_ide/farmrs\" }"),
+        "{manifest}"
+    );
     assert!(manifest.contains("[[bin]]"), "{manifest}");
     assert!(manifest.contains("name = \"main\""), "{manifest}");
     assert!(manifest.contains("path = \"main.rs\""), "{manifest}");
+    assert!(
+        workspace
+            .join("rs_src")
+            .join(".farmrs_ide")
+            .join("farmrs")
+            .join("src")
+            .join("prelude.rs")
+            .is_file()
+    );
 
     let _ = fs::remove_dir_all(workspace);
 }

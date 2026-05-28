@@ -8,7 +8,12 @@ use std::time::{Duration, SystemTime};
 
 const DEFAULT_SRC_DIR: &str = "rs_src";
 const DEFAULT_OUT_DIR: &str = "py_src";
+const IDE_SUPPORT_DIR: &str = ".farmrs_ide";
+const IDE_SUPPORT_CRATE_DIR: &str = ".farmrs_ide/farmrs";
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+#[cfg(windows)]
+mod win_gui;
 
 fn main() {
     if let Err(err) = run() {
@@ -18,7 +23,16 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let cli = parse_cli(env::args().skip(1).collect())?;
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.is_empty() {
+        #[cfg(windows)]
+        {
+            win_gui::detach_console();
+            return win_gui::run();
+        }
+    }
+
+    let cli = parse_cli(args)?;
 
     if cli.show_help {
         print_usage();
@@ -55,6 +69,12 @@ struct Cli {
     out_dir: PathBuf,
     src_dir_set: bool,
     out_dir_set: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileStamp {
+    modified: SystemTime,
+    len: u64,
 }
 
 fn parse_cli(args: Vec<String>) -> Result<Cli, String> {
@@ -286,26 +306,37 @@ fn watch_project(src_dir: &Path, out_dir: &Path) -> Result<(), String> {
     println!("watch: .rs / .farmrs の変更を監視しています。終了するには Ctrl+C を押してください。");
 
     let mut seen = snapshot_source_files(src_dir)?;
+    let mut seen_outputs = snapshot_output_files(src_dir, out_dir, seen.keys())?;
     loop {
         thread::sleep(WATCH_INTERVAL);
         let current = snapshot_source_files(src_dir)?;
+        let current_outputs = snapshot_output_files(src_dir, out_dir, current.keys())?;
 
         if current.keys().ne(seen.keys()) {
             write_ide_manifest(src_dir)?;
         }
 
-        for (input_path, modified) in &current {
-            if seen.get(input_path) != Some(modified) {
-                compile_project_file(src_dir, out_dir, input_path)?;
-                println!("OK: {} を変換しました", display_path(input_path));
+        for (input_path, stamp) in &current {
+            let output_path = output_path_for(src_dir, out_dir, input_path)?;
+            let source_changed = seen.get(input_path) != Some(stamp);
+            let output_changed =
+                seen_outputs.get(&output_path) != current_outputs.get(&output_path);
+            if source_changed || output_changed {
+                let output_path = compile_project_file(src_dir, out_dir, input_path)?;
+                println!("OK: {} を変換しました", display_path(&output_path));
             }
         }
 
         seen = current;
+        seen_outputs = snapshot_output_files(src_dir, out_dir, seen.keys())?;
     }
 }
 
-fn compile_project_file(src_dir: &Path, out_dir: &Path, input_path: &Path) -> Result<(), String> {
+fn compile_project_file(
+    src_dir: &Path,
+    out_dir: &Path,
+    input_path: &Path,
+) -> Result<PathBuf, String> {
     let source = fs::read_to_string(input_path).map_err(|err| {
         format!(
             "エラー: `{}` を読み込めません: {err}",
@@ -326,7 +357,9 @@ fn compile_project_file(src_dir: &Path, out_dir: &Path, input_path: &Path) -> Re
             "エラー: `{}` に書き込めません: {err}",
             display_path(&output_path)
         )
-    })
+    })?;
+
+    Ok(output_path)
 }
 
 fn output_path_for(src_dir: &Path, out_dir: &Path, input_path: &Path) -> Result<PathBuf, String> {
@@ -342,18 +375,42 @@ fn output_path_for(src_dir: &Path, out_dir: &Path, input_path: &Path) -> Result<
     Ok(output_path)
 }
 
-fn snapshot_source_files(src_dir: &Path) -> Result<BTreeMap<PathBuf, SystemTime>, String> {
+fn snapshot_source_files(src_dir: &Path) -> Result<BTreeMap<PathBuf, FileStamp>, String> {
     ensure_source_dir(src_dir)?;
     let mut snapshot = BTreeMap::new();
 
     for file in find_source_files(src_dir)? {
-        let modified = fs::metadata(&file)
-            .and_then(|metadata| metadata.modified())
-            .map_err(|err| format!("エラー: `{}` を確認できません: {err}", display_path(&file)))?;
-        snapshot.insert(file, modified);
+        snapshot.insert(file.clone(), file_stamp(&file)?);
     }
 
     Ok(snapshot)
+}
+
+fn snapshot_output_files<'a>(
+    src_dir: &Path,
+    out_dir: &Path,
+    input_paths: impl Iterator<Item = &'a PathBuf>,
+) -> Result<BTreeMap<PathBuf, Option<FileStamp>>, String> {
+    let mut snapshot = BTreeMap::new();
+
+    for input_path in input_paths {
+        let output_path = output_path_for(src_dir, out_dir, input_path)?;
+        snapshot.insert(output_path.clone(), file_stamp(&output_path).ok());
+    }
+
+    Ok(snapshot)
+}
+
+fn file_stamp(path: &Path) -> Result<FileStamp, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|err| format!("エラー: `{}` を確認できません: {err}", display_path(path)))?;
+    let modified = metadata
+        .modified()
+        .map_err(|err| format!("エラー: `{}` を確認できません: {err}", display_path(path)))?;
+    Ok(FileStamp {
+        modified,
+        len: metadata.len(),
+    })
 }
 
 fn find_source_files(src_dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -375,7 +432,7 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Stri
             .metadata()
             .map_err(|err| format!("エラー: `{}` を確認できません: {err}", display_path(&path)))?;
 
-        if metadata.is_dir() {
+        if metadata.is_dir() && !should_skip_source_dir(&path) {
             collect_source_files(&path, files)?;
         } else if metadata.is_file() && is_source_file(&path) {
             files.push(path);
@@ -387,6 +444,7 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Stri
 
 fn write_ide_manifest(src_dir: &Path) -> Result<PathBuf, String> {
     let manifest_path = src_dir.join("Cargo.toml");
+    write_ide_support_crate(src_dir)?;
     let rs_files = find_rs_files(src_dir)?;
     let manifest = render_ide_manifest(src_dir, &rs_files)?;
     fs::write(&manifest_path, manifest).map_err(|err| {
@@ -409,7 +467,7 @@ fn render_ide_manifest(src_dir: &Path, rs_files: &[PathBuf]) -> Result<String, S
     manifest.push_str("[dependencies]\n");
     manifest.push_str(&format!(
         "farmrs = {{ path = {} }}\n",
-        toml_string(env!("CARGO_MANIFEST_DIR"))
+        toml_string(IDE_SUPPORT_CRATE_DIR)
     ));
 
     let mut used_names = BTreeSet::new();
@@ -433,6 +491,47 @@ fn render_ide_manifest(src_dir: &Path, rs_files: &[PathBuf]) -> Result<String, S
     Ok(manifest)
 }
 
+fn write_ide_support_crate(src_dir: &Path) -> Result<(), String> {
+    let crate_dir = src_dir.join(IDE_SUPPORT_CRATE_DIR);
+    let src_support_dir = crate_dir.join("src");
+    fs::create_dir_all(&src_support_dir).map_err(|err| {
+        format!(
+            "エラー: `{}` を作成できません: {err}",
+            display_path(&src_support_dir)
+        )
+    })?;
+
+    let manifest_path = crate_dir.join("Cargo.toml");
+    fs::write(&manifest_path, render_ide_support_manifest()).map_err(|err| {
+        format!(
+            "エラー: `{}` に書き込めません: {err}",
+            display_path(&manifest_path)
+        )
+    })?;
+
+    let lib_path = src_support_dir.join("lib.rs");
+    fs::write(&lib_path, "pub mod prelude;\n").map_err(|err| {
+        format!(
+            "エラー: `{}` に書き込めません: {err}",
+            display_path(&lib_path)
+        )
+    })?;
+
+    let prelude_path = src_support_dir.join("prelude.rs");
+    fs::write(&prelude_path, include_str!("prelude.rs")).map_err(|err| {
+        format!(
+            "エラー: `{}` に書き込めません: {err}",
+            display_path(&prelude_path)
+        )
+    })?;
+
+    Ok(())
+}
+
+fn render_ide_support_manifest() -> &'static str {
+    "[package]\nname = \"farmrs\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n"
+}
+
 fn find_rs_files(src_dir: &Path) -> Result<Vec<PathBuf>, String> {
     ensure_source_dir(src_dir)?;
     let mut files = Vec::new();
@@ -452,7 +551,7 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> 
             .metadata()
             .map_err(|err| format!("エラー: `{}` を確認できません: {err}", display_path(&path)))?;
 
-        if metadata.is_dir() {
+        if metadata.is_dir() && !should_skip_source_dir(&path) {
             collect_rs_files(&path, files)?;
         } else if metadata.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
             files.push(path);
@@ -516,6 +615,12 @@ fn is_source_file(path: &Path) -> bool {
         .is_some_and(|ext| ext == "rs" || ext == "farmrs")
 }
 
+fn should_skip_source_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == IDE_SUPPORT_DIR || name == "target")
+}
+
 fn ensure_source_dir(src_dir: &Path) -> Result<(), String> {
     match fs::metadata(src_dir) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
@@ -548,4 +653,15 @@ fn print_usage() {
     println!(
         "farmrs\n\nUsage:\n  farmrs <input.rs|input.farmrs>\n  farmrs <input.rs|input.farmrs> -o <output.py>\n  farmrs <input.rs|input.farmrs> --check\n  farmrs --init-ide [--src rs_src]\n  farmrs --sync [--src rs_src] [--out py_src]\n  farmrs --watch [--src rs_src] [--out py_src]\n  farmrs --version"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_cli_empty_args_defaults_to_help() {
+        let cli = parse_cli(Vec::new()).unwrap();
+        assert!(cli.show_help);
+    }
 }

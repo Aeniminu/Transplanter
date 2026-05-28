@@ -6,190 +6,54 @@
 
 これは Rust コンパイラではありません。所有権、借用、ライフタイム、trait bound、macro 展開、crate 解決、Rust 標準ライブラリの実行時挙動は再現しません。ただし、IDE 補助やコード整理に使う Rust 風の宣言は、できるだけゲーム用 Python 風コードへ安全に落とすか、出力なしのメタデータとして受理します。
 
-## 導入
+## Windows 版の使い方
 
-`farmrs` は、ゲームの Save フォルダに入れる `.py` を作るための道具です。普段は次の3つの場所を使います。
+`farmrs` は Windows の `farmrs.exe` をダブルクリックして使う運用を基本にしています。このREADMEの導入手順もWindows専用です。Rust 風コードは `rs_src` に書き、ゲームが読む `.py` は Save フォルダへ自動出力します。
 
 ```text
-farmrs の作業フォルダ/
+好きな作業フォルダ/
+  farmrs.exe
+  farmrs.toml        パス設定。GUIで自動作成
   rs_src/
-    main.rs        ここに Rust 風コードを書く
+    Cargo.toml       IDE補助用。自動作成
+    .farmrs_ide/     IDE補助用。自動作成
+    main.rs          ここにRust風コードを書く
 
-ゲームの Save フォルダ/
-  __builtins__.py  ゲームが作る補完用ファイル
-  main.py          farmrs が出力するゲーム用コード
+ゲームのSaveフォルダ/
+  __builtins__.py    ゲーム側が作る補完用ファイル
+  main.py            farmrsが出力するゲーム用コード
 ```
 
-`rs_src` は自分が書く場所です。ゲームはここを見ません。
+`rs_src` は自分が編集する場所です。ゲームはここを直接読みません。ゲームが読むのは Save フォルダ内の `main.py` です。
 
-ゲームが見るのは Save フォルダの `.py` です。`farmrs --sync` や `farmrs --watch` の `--out` に Save フォルダを指定すると、`rs_src/main.rs` から `Saveフォルダ/main.py` が自動で作られます。
+## 初回セットアップ
 
-[公式 Wiki の External Editor](https://thefarmerwasreplaced.wiki.gg/wiki/External_editor) では、外部エディタ用の Save フォルダはゲーム内の `Load` メニューにある `Open Folder` ボタンから開ける、と説明されています。外部で変更した `.py` をゲーム内で読み直すには、ゲーム側の `File Watcher` オプションを有効にします。新しいファイルを作ったり削除したりした場合は、Save の再読み込みが必要です。
+1. 好きな場所に作業フォルダを作ります。例: `C:\Users\YourName\Desktop\farming`
+2. その中に `farmrs.exe` を置きます。
+3. `farmrs.exe` をダブルクリックします。
+4. 初回起動時に `farmrs.toml`、`rs_src/main.rs`、IDE補助用ファイルが自動作成されます。
+5. ウィンドウの `ゲームの Save フォルダ` に、ゲーム側のセーブフォルダを指定します。
+6. `保存` を押します。
 
-### まずゲーム側で Save フォルダを開く
+初回生成直後は `out_dir` が空欄なので、Saveフォルダを選ぶまでは監視を開始しません。Saveフォルダを指定すると自動変換が有効になります。`main.rs` を保存すると、Save フォルダの `main.py` が更新されます。`main.py` がゲーム側などで空に戻された場合も、対応する `.rs` があれば再生成します。
+
+## Save フォルダの見つけ方
+
+[公式 Wiki の External Editor](https://thefarmerwasreplaced.wiki.gg/wiki/External_editor) では、外部エディタ用の Save フォルダはゲーム内の `Load` メニューにある `Open Folder` ボタンから開ける、と説明されています。
 
 1. The Farmer Was Replaced を起動します。
 2. `Load` メニューを開きます。
 3. 使いたいセーブを選びます。
 4. `Open Folder` を押します。
-5. 開いたフォルダのパスをコピーします。
+5. 開いたフォルダのパスを、`farmrs.exe` のウィンドウに指定します。
 
-開いた場所に `__builtins__.py` や既存の `.py` が見えていれば、そのフォルダが `--out` に指定する場所です。`Saves` という親フォルダではなく、実際に `.py` が入っているセーブ個別のフォルダを指定してください。
+開いた場所に `__builtins__.py` や既存の `.py` が見えていれば、そのフォルダが指定先です。`Saves` という親フォルダではなく、実際に `.py` が入っているセーブ個別のフォルダを指定してください。
 
-Windows なら、エクスプローラー上部のアドレス欄をクリックしてコピーできます。パスに空白や日本語が含まれてもよいので、コマンドでは必ず `"` で囲みます。例:
-
-```text
-C:\Users\YourName\AppData\LocalLow\TheFarmerWasReplaced\TheFarmerWasReplaced\Saves\Save0
-```
-
-環境によってパスは違うので、手入力で探すよりゲームの `Open Folder` から開くのが一番安全です。
-
-`rs_src` は Save フォルダの中ではなく、`farmrs` の作業フォルダ側に置くのがおすすめです。Save フォルダにはゲームが読む `.py` だけを出す、と考えると混乱しにくいです。
-
-### farmrs を動かす準備
-
-`farmrs` を使うには、配布済みの実行ファイル、または Rust/Cargo のどちらかが必要です。
-
-以下のコマンドは、基本的に `farmrs` の作業フォルダで実行します。Save フォルダではありません。
-
-```text
-farmrs の作業フォルダ/
-  farmrs.exe      配布版を使う場合
-  Cargo.toml      ソース版を使う場合
-  rs_src/
-    main.rs
-```
-
-#### Windows: 配布済み `farmrs.exe` を使う場合
-
-実行場所: `farmrs.exe` を置いた `farmrs` の作業フォルダ。
-
-GitHub からダウンロードする手順:
-
-1. ブラウザで [Aeniminu/farmrs](https://github.com/Aeniminu/farmrs) を開きます。
-2. 右側、またはページ上部付近にある `Releases` を押します。
-3. 一番上の `Latest` と書かれたリリースを開きます。
-4. `Assets` を開きます。
-5. Windows 用の `.exe`、たとえば `farmrs-windows-x86_64.exe` や `farmrs.exe` をダウンロードします。
-6. ダウンロードしたファイルを、実プレイ用の作業フォルダに置きます。
-7. 名前が長ければ `farmrs.exe` に変更します。
-
-`Releases` が見つからない、または `Assets` に `.exe` が無い場合は、そのリポジトリではまだ実行ファイルが配布されていません。その場合は下の「ソースから使う場合」で、このPC上で `farmrs.exe` を作ります。
-
-```powershell
-.\farmrs.exe --help
-.\farmrs.exe my_script.rs -o my_script.py
-```
-
-実プレイでは、`-o my_script.py` よりも Save フォルダを `--out` に指定する使い方が便利です。
-
-```powershell
-.\farmrs.exe --sync --out "ゲームのSaveフォルダ"
-.\farmrs.exe --watch --out "ゲームのSaveフォルダ"
-```
-
-#### Windows: ソースから使う場合
-
-実行場所: このリポジトリをクローンした `farmrs` フォルダ。`Cargo.toml` が見えている場所です。
-
-```powershell
-rustc --version
-cargo --version
-cargo build
-cargo run -- --help
-```
-
-実プレイ用:
-
-```powershell
-cargo run -- --sync --out "ゲームのSaveフォルダ"
-cargo run -- --watch --out "ゲームのSaveフォルダ"
-```
-
-ローカルの `farmrs` コマンドとして入れる場合:
-
-```powershell
-cargo install --path .
-farmrs --help
-farmrs --sync --out "ゲームのSaveフォルダ"
-```
-
-#### macOS: 配布ファイルを使う場合
-
-実行場所: ダウンロードした `farmrs` を置いた作業フォルダ。
-
-GitHub の [Aeniminu/farmrs Releases](https://github.com/Aeniminu/farmrs/releases) を開き、`Assets` から macOS 用のファイルをダウンロードします。macOS 用の配布ファイルが無い場合は、ソースから使う方法を選びます。
-
-```bash
-chmod +x farmrs
-./farmrs --help
-./farmrs --sync --out "ゲームのSaveフォルダ"
-./farmrs --watch --out "ゲームのSaveフォルダ"
-```
-
-#### macOS: ソースから使う場合
-
-実行場所: このリポジトリをクローンした `farmrs` フォルダ。`Cargo.toml` が見えている場所です。
-
-```bash
-rustc --version
-cargo --version
-cargo build
-cargo run -- --help
-cargo run -- --sync --out "ゲームのSaveフォルダ"
-cargo run -- --watch --out "ゲームのSaveフォルダ"
-```
-
-ローカルの `farmrs` コマンドとして入れる場合:
-
-```bash
-cargo install --path .
-farmrs --help
-farmrs --sync --out "ゲームのSaveフォルダ"
-```
-
-#### Linux: 配布ファイルを使う場合
-
-実行場所: ダウンロードした `farmrs` を置いた作業フォルダ。
-
-GitHub の [Aeniminu/farmrs Releases](https://github.com/Aeniminu/farmrs/releases) を開き、`Assets` から Linux 用のファイルをダウンロードします。Linux 用の配布ファイルが無い場合は、ソースから使う方法を選びます。
-
-```bash
-chmod +x farmrs
-./farmrs --help
-./farmrs --sync --out "ゲームのSaveフォルダ"
-./farmrs --watch --out "ゲームのSaveフォルダ"
-```
-
-#### Linux: ソースから使う場合
-
-実行場所: このリポジトリをクローンした `farmrs` フォルダ。`Cargo.toml` が見えている場所です。
-
-```bash
-rustc --version
-cargo --version
-cargo build
-cargo run -- --help
-cargo run -- --sync --out "ゲームのSaveフォルダ"
-cargo run -- --watch --out "ゲームのSaveフォルダ"
-```
-
-Linux で Steam Proton を使っている場合も、Save フォルダはゲーム内の `Load` -> `Open Folder` から開くのが確実です。
-
-リリース用の実行ファイルを自分で作る場合は、ソース版の `farmrs` フォルダで次を実行します。
-
-```bash
-cargo build --release
-```
-
-## クイックスタート
-
-ここでは、ゲームの Save フォルダへ直接 `.py` を出す方法で説明します。
-
-1. `farmrs` の作業フォルダに `rs_src` フォルダを作ります。
-2. `rs_src/main.rs` を作ります。
+## main.rs の最小例
 
 ```rust
+use farmrs::prelude::*;
+
 fn main() {
     loop {
         if can_harvest() {
@@ -201,26 +65,6 @@ fn main() {
 }
 ```
 
-3. まず一度だけ、IDE 補助用の設定を作ります。
-
-```bash
-cargo run -- --init-ide
-```
-
-4. Save フォルダへ `.py` を出力します。
-
-```powershell
-cargo run -- --sync --out "C:\Users\YourName\AppData\LocalLow\TheFarmerWasReplaced\TheFarmerWasReplaced\Saves\Save0"
-```
-
-配布済みの `farmrs.exe` を使う場合は、`cargo run --` の部分を `.\farmrs.exe` に置き換えます。
-
-```powershell
-.\farmrs.exe --sync --out "C:\Users\YourName\AppData\LocalLow\TheFarmerWasReplaced\TheFarmerWasReplaced\Saves\Save0"
-```
-
-5. Save フォルダに `main.py` ができていることを確認します。
-
 生成される `main.py`:
 
 ```python
@@ -231,120 +75,70 @@ while True:
         move(East)
 ```
 
-6. ゲーム側で File Watcher を有効にするか、Save を読み込み直します。
+`use farmrs::prelude::*;` はCursorなどのIDEで未定義エラーを減らすための行です。変換後の `.py` には出力されません。
 
-保存するたびに自動変換したい場合は、`--watch` を使います。
+## farmrs.exe の入手
 
-```powershell
-cargo run -- --watch --out "C:\Users\YourName\AppData\LocalLow\TheFarmerWasReplaced\TheFarmerWasReplaced\Saves\Save0"
-```
+GitHubで配布されている場合:
 
-この状態で `rs_src/main.rs` を保存すると、Save フォルダの `main.py` が更新されます。
+1. ブラウザで [Aeniminu/farmrs](https://github.com/Aeniminu/farmrs) を開きます。
+2. `Releases` を押します。
+3. 一番上の `Latest` リリースを開きます。
+4. `Assets` を開きます。
+5. Windows 用の `.exe` をダウンロードします。
+6. 実プレイ用の作業フォルダに置き、必要なら名前を `farmrs.exe` に変更します。
 
-構文だけ確認する場合:
-
-```bash
-cargo run -- rs_src/main.rs --check
-```
-
-もう少し大きい例として、列を回りながら畑を手入れする `examples/crop_columns.farmrs` も入っています。
-
-```bash
-cargo run -- examples/crop_columns.farmrs --check
-cargo run -- examples/crop_columns.farmrs -o crop_columns.py
-```
-
-## rs_src / py_src 運用
-
-`py_src` は、Save フォルダへ直接出す前に変換結果を試すための仮置き場です。ゲームで実際に使うときは、`--out` に Save フォルダを指定してください。
-
-```text
-farmrs の作業フォルダ/
-  rs_src/
-    Cargo.toml
-    main.rs
-  py_src/
-    main.py       変換結果の確認用
-
-ゲームの Save フォルダ/
-  main.py       実プレイでゲームが読むファイル
-```
-
-`--out` を省略すると、既定では `rs_src` の `.rs` / `.farmrs` を探して `py_src` に `.py` を出力します。
-
-```bash
-cargo run -- --sync
-```
-
-実プレイ用には、`--out` に Save フォルダを指定します。
+`Releases` や `.exe` が無い場合は、ソースから自分で作ります。このリポジトリの `Cargo.toml` がある場所で次を実行します。
 
 ```powershell
-cargo run -- --sync --out "ゲームのSaveフォルダ"
-cargo run -- --watch --out "ゲームのSaveフォルダ"
+cargo build --release
 ```
 
-フォルダ名を変えたい場合:
+作成された `target\release\farmrs.exe` を、実プレイ用の作業フォルダへ置きます。
 
-```bash
-cargo run -- --sync --src my_rs --out game_py
-cargo run -- --watch --src my_rs --out game_py
+## farmrs.toml の役割
+
+`farmrs.toml` は `farmrs.exe` の設定メモです。GUIで選んだ2つのパスが保存されます。
+
+```toml
+src_dir = "C:\\Users\\YourName\\Desktop\\farming\\rs_src"
+out_dir = "C:\\Users\\YourName\\AppData\\LocalLow\\TheFarmerWasReplaced\\TheFarmerWasReplaced\\Saves\\Save0"
 ```
 
-削除された `.rs` / `.farmrs` に対応する `.py` は自動削除しません。ゲーム側で使っているファイルを誤って消さないため、不要になった `.py` は手動で整理してください。
+ゲームでいうと「このセーブではこの設定を使う」という保存データに近いです。Cargo の `Cargo.toml` はRustプロジェクトの設計図、`farmrs.toml` は変換器の行き先メモ、と分けて考えると分かりやすいです。
 
 ## IDE 補助
 
-`rs_src/*.rs` は Rust ファイルとして編集できるため、Cursor や rust-analyzer の補完を使いやすくなります。ただし `harvest()` や `Entity::Carrot` はゲーム独自 API なので、そのままだと Rust 側では未定義になります。
+`rs_src/*.rs` はRustファイルなので、Cursorやrust-analyzerの補完を使いやすくなります。ただし `harvest()` や `Entity::Carrot` はゲーム独自APIなので、そのままだとRust側では未定義になります。
 
-そのため、IDE 用の緩衝ライブラリとして `farmrs::prelude` を用意しています。これはゲーム動作を再現するものではなく、未定義エラーを減らして Rust 構文を書きやすくするための空実装です。
+そのため、`farmrs.exe` は `rs_src/Cargo.toml` と `rs_src/.farmrs_ide/` を自動生成します。これはゲーム動作を再現するものではなく、未定義エラーを減らしてRust構文を書きやすくするための空実装です。
 
-まず IDE 用 Cargo 設定を作ります。
+Rust として確認する場合は、PowerShellで `rs_src` のある作業フォルダから次を実行します。
 
-```bash
-cargo run -- --init-ide
+```powershell
+cargo check --manifest-path rs_src\Cargo.toml
 ```
 
-`rs_src/main.rs` の例:
-
-```rust
-use farmrs::prelude::*;
-
-fn should_harvest(entity: Entity) -> bool {
-    if entity == Entity::Carrot {
-        return can_harvest();
-    }
-    return false;
-}
-
-fn main() {
-    if should_harvest(Entity::Carrot) {
-        harvest();
-        trade_n(Item::Carrot_Seed, 10);
-        use_item_n(Item::Fertilizer, 2);
-        measure_dir(Direction::North);
-    }
-}
-```
-
-Rust として確認する場合:
-
-```bash
-cargo check --manifest-path rs_src/Cargo.toml
-```
-
-ゲーム用 `.py` に変換する場合:
-
-```bash
-cargo run -- --sync
-```
-
-`use farmrs::prelude::*;` はトランスパイル時に無視され、出力には残りません。Rust は関数オーバーロードができないため、複数引数のゲーム API には Rust 風 alias を使います。
+Rust は関数オーバーロードができないため、複数引数のゲームAPIにはRust風aliasを使います。
 
 | IDE 用 | 出力 |
 | --- | --- |
 | `trade_n(Item::Carrot_Seed, 10);` | `trade(Items.Carrot_Seed, 10)` |
 | `use_item_n(Item::Fertilizer, 2);` | `use_item(Items.Fertilizer, 2)` |
 | `measure_dir(Direction::North);` | `measure(North)` |
+
+## コマンドで使う場合
+
+通常はダブルクリックで十分です。問題の切り分けをしたいときだけ、PowerShellで `farmrs.exe` のある作業フォルダへ移動して使います。
+
+```powershell
+.\farmrs.exe --help
+.\farmrs.exe --sync --src rs_src --out "ゲームのSaveフォルダ"
+.\farmrs.exe --watch --src rs_src --out "ゲームのSaveフォルダ"
+.\farmrs.exe rs_src\main.rs --check
+```
+
+`--out` を省略すると、既定では `py_src` に出力します。実プレイでは基本的にSaveフォルダを指定してください。削除された `.rs` に対応する `.py` は自動削除しません。ゲーム側で使っているファイルを誤って消さないため、不要な `.py` は手動で整理してください。
 
 ## farmrs 構文
 
@@ -489,7 +283,7 @@ cargo run -- --sync
 | ゲーム内の unlock 状態・所持数・実行結果 | ゲーム内で確定 | 変換器は静的なコード生成だけを行う |
 | ゲーム API の実際の挙動 | ゲーム内で実行 | `farmrs::prelude` は IDE 補完用の空実装 |
 
-迷った場合は、まず `.rs` で書いて `cargo run -- --sync` または `cargo run -- file.rs --check` を実行してください。構文エラーはファイル名・行・列つきの日本語エラーになります。
+迷った場合は、まず `.rs` で書いてGUIを起動するか、PowerShellで `.\farmrs.exe --sync --src rs_src --out "ゲームのSaveフォルダ"` または `.\farmrs.exe rs_src\main.rs --check` を実行してください。構文エラーはファイル名・行・列つきの日本語エラーになります。
 
 ## 制限事項
 
@@ -506,20 +300,21 @@ Rust の所有権・借用・ライフタイムの意味論は再現しません
 
 ## 検証方法
 
-Rust/Cargo が使える環境で次を実行します。
+開発者がソースから確認する場合は、Windows PowerShellでこのリポジトリの `Cargo.toml` がある場所から実行します。
 
-```bash
-cargo build
+```powershell
 cargo fmt --check
+cargo build
 cargo test
-cargo run -- --help
-cargo run -- examples/basic.farmrs
-cargo run -- examples/basic.farmrs -o output.py
-cargo run -- examples/basic.farmrs --check
-cargo run -- examples/crop_columns.farmrs --check
-cargo run -- --sync
-cargo run -- --init-ide
-cargo check --manifest-path rs_src/Cargo.toml
+cargo build --release
+.\target\release\farmrs.exe --help
+.\target\release\farmrs.exe examples\basic.farmrs
+.\target\release\farmrs.exe examples\basic.farmrs -o output.py
+.\target\release\farmrs.exe examples\basic.farmrs --check
+.\target\release\farmrs.exe examples\crop_columns.farmrs --check
+.\target\release\farmrs.exe --sync
+.\target\release\farmrs.exe --init-ide
+cargo check --manifest-path rs_src\Cargo.toml
 ```
 
 期待される `examples/basic.farmrs` の出力:
@@ -532,4 +327,4 @@ while True:
         move(East)
 ```
 
-`cargo` が見つからない場合は、Rust toolchain をインストールするか、配布済みの `farmrs` 実行ファイルを使ってください。
+`cargo` が見つからない場合は、Rust toolchain をインストールするか、配布済みの `farmrs.exe` を使ってください。実プレイでは、上の検証コマンドよりも `farmrs.exe` のダブルクリックGUIを使うのが簡単です。
