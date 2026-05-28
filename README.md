@@ -3,7 +3,7 @@
 
 Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampowered.com/app/2060160/_Replace/?l=japanese) でPythonのみならず別の言語でもプログラミング学習を楽しむための、非公式変換アプリです。
 
-現在入っている変換器は `Rust -> ゲーム用Python` です。これはRustとして書いた `.rs` を `cargo check` で確認し、成功した場合だけゲームの Save フォルダへ `.py` を出力します。
+現在入っている変換器は `Rust -> ゲーム用Python` のみです。
 将来的には `Lisp -> Python` など別の変換器を `converters/` に追加できる構成にして行きたいなとか思っています。
 
 ※これはゲーム内のウィンドウで別言語を実行するためのツールではありません。主にIDEなどを用いながら別言語のコードを書いていただき、保存したらゲームで使用できるPython風コードに反映されるという形をとっています。
