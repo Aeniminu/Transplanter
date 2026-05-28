@@ -1,23 +1,15 @@
-pub mod api_map;
-pub mod codegen;
-pub mod error;
-pub mod ir;
-pub mod lexer;
-pub mod parser;
-pub mod prelude;
+pub mod converters;
+pub mod transplanter;
 
-use error::FarmError;
+pub use converters::rust_to_python::{
+    RustToPython, RustToPythonError, check_source, compile_source, prelude,
+};
+pub use transplanter::{Converter, Transplanter};
 
-pub fn compile_source(source: &str) -> Result<String, FarmError> {
-    let program = parse_source(source)?;
-    Ok(codegen::generate(&program))
+pub mod error {
+    pub use crate::RustToPythonError;
 }
 
-pub fn check_source(source: &str) -> Result<(), FarmError> {
-    parse_source(source).map(|_| ())
-}
-
-fn parse_source(source: &str) -> Result<ir::FarmIr, FarmError> {
-    let tokens = lexer::lex(source)?;
-    parser::parse(&tokens)
+pub fn rust_to_python_transplanter() -> Transplanter<RustToPython> {
+    Transplanter::new(RustToPython)
 }

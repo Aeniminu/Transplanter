@@ -80,19 +80,37 @@ impl<T> Index<i32> for FarmList<T> {
     type Output = T;
 
     fn index(&self, _index: i32) -> &Self::Output {
-        unimplemented!("farmrs prelude is only for IDE checks")
+        unimplemented!("transplanter_rust prelude is only for IDE checks")
     }
 }
 
 impl<T> IndexMut<i32> for FarmList<T> {
     fn index_mut(&mut self, _index: i32) -> &mut Self::Output {
-        unimplemented!("farmrs prelude is only for IDE checks")
+        unimplemented!("transplanter_rust prelude is only for IDE checks")
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct FarmSet<T = ()> {
     _marker: PhantomData<T>,
+}
+
+impl<T> IntoIterator for FarmList<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Vec::new().into_iter()
+    }
+}
+
+impl<T> IntoIterator for FarmSet<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Vec::new().into_iter()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -104,13 +122,13 @@ impl<K, V> Index<K> for FarmDict<K, V> {
     type Output = V;
 
     fn index(&self, _index: K) -> &Self::Output {
-        unimplemented!("farmrs prelude is only for IDE checks")
+        unimplemented!("transplanter_rust prelude is only for IDE checks")
     }
 }
 
 impl<K, V> IndexMut<K> for FarmDict<K, V> {
     fn index_mut(&mut self, _index: K) -> &mut Self::Output {
-        unimplemented!("farmrs prelude is only for IDE checks")
+        unimplemented!("transplanter_rust prelude is only for IDE checks")
     }
 }
 

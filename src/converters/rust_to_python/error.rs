@@ -2,13 +2,13 @@ use std::error::Error;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FarmError {
+pub struct RustToPythonError {
     pub message: String,
     pub line: usize,
     pub column: usize,
 }
 
-impl FarmError {
+impl RustToPythonError {
     pub fn new(message: impl Into<String>, line: usize, column: usize) -> Self {
         Self {
             message: message.into(),
@@ -22,7 +22,7 @@ impl FarmError {
     }
 }
 
-impl fmt::Display for FarmError {
+impl fmt::Display for RustToPythonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -32,4 +32,4 @@ impl fmt::Display for FarmError {
     }
 }
 
-impl Error for FarmError {}
+impl Error for RustToPythonError {}

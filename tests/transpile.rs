@@ -1,4 +1,4 @@
-use farmrs::compile_source;
+use transplanter::compile_source;
 
 #[test]
 fn basic_loop() {
@@ -129,7 +129,7 @@ fn logical_operators_and_namespace_aliases() {
 fn main() {
     if can_harvest() && !is_empty() || get_ground_type() == Ground::Soil {
         trade(Item::Carrot_Seed);
-        plant(Entities::Bush);
+        plant(Entity::Bush);
     }
 }
 "#;
@@ -161,7 +161,7 @@ fn main() {
 #[test]
 fn prelude_import_is_ignored() {
     let source = r#"
-use farmrs::prelude::*;
+use transplanter_rust::prelude::*;
 
 fn main() {
     harvest();
@@ -188,7 +188,7 @@ fn main() {
 #[test]
 fn typed_params_and_return_types_are_ignored_in_output() {
     let source = r#"
-use farmrs::prelude::*;
+use transplanter_rust::prelude::*;
 
 fn should_harvest(entity: Entity) -> bool {
     if entity == Entity::Carrot {
@@ -288,7 +288,7 @@ enum Crop {
 }
 
 impl Plan {
-    fn make(entity: Entity, count: i32 = 1) -> Plan {
+    fn make(entity: Entity, count: i32) -> Plan {
         return Plan { entity: entity, count: count };
     }
 }
@@ -303,14 +303,14 @@ fn main() {
     let plan = Plan { entity: Entity::Carrot, count: 10 };
     if Crop::Carrot == Crop::Carrot {
         helpers::clear_tile();
-        Plan::make(plan["entity"]);
+        Plan::make(plan["entity"], 1);
     }
 }
 "#;
 
     assert_eq!(
         compile_source(source).unwrap(),
-        "Crop_Carrot = \"Crop.Carrot\"\nCrop_Pumpkin = \"Crop.Pumpkin\"\n\ndef Plan(entity=None, count=None):\n    return {\"entity\": entity, \"count\": count}\n\ndef Plan_make(entity, count=1):\n    return Plan(entity=entity, count=count)\n\ndef helpers_clear_tile():\n    harvest()\n\nplan = Plan(entity=Entities.Carrot, count=10)\nif Crop_Carrot == Crop_Carrot:\n    helpers_clear_tile()\n    Plan_make(plan[\"entity\"])\n"
+        "Crop_Carrot = \"Crop.Carrot\"\nCrop_Pumpkin = \"Crop.Pumpkin\"\n\ndef Plan(entity=None, count=None):\n    return {\"entity\": entity, \"count\": count}\n\ndef Plan_make(entity, count):\n    return Plan(entity=entity, count=count)\n\ndef helpers_clear_tile():\n    harvest()\n\nplan = Plan(entity=Entities.Carrot, count=10)\nif Crop_Carrot == Crop_Carrot:\n    helpers_clear_tile()\n    Plan_make(plan[\"entity\"], 1)\n"
     );
 }
 
@@ -382,24 +382,28 @@ fn main() {
 fn collection_literals_indexing_and_simulate_dicts() {
     let source = r#"
 fn main() {
-    let xs = [1, 2, 3];
+    let mut xs = [1, 2, 3];
     let pair = (1, 2);
-    let costs = {Item::Carrot_Seed: 10, Item::Fertilizer: 1};
+    let mut costs = dict();
+    let mut globals = dict();
+    costs[Item::Carrot_Seed] = 10;
+    costs[Item::Fertilizer] = 1;
+    globals["x"] = 1;
     xs[0] = xs[1] + costs[Item::Carrot_Seed];
-    simulate("main.py", [Unlock::Carrots], {Item::Carrot_Seed: 10}, {"x": 1}, 0, 1);
+    simulate("main.py", [Unlock::Carrots], costs, globals, 0, 1);
 }
 "#;
 
     assert_eq!(
         compile_source(source).unwrap(),
-        "xs = [1, 2, 3]\npair = (1, 2)\ncosts = {Items.Carrot_Seed: 10, Items.Fertilizer: 1}\nxs[0] = xs[1] + costs[Items.Carrot_Seed]\nsimulate(\"main.py\", [Unlocks.Carrots], {Items.Carrot_Seed: 10}, {\"x\": 1}, 0, 1)\n"
+        "xs = [1, 2, 3]\npair = (1, 2)\ncosts = dict()\nglobals = dict()\ncosts[Items.Carrot_Seed] = 10\ncosts[Items.Fertilizer] = 1\nglobals[\"x\"] = 1\nxs[0] = xs[1] + costs[Items.Carrot_Seed]\nsimulate(\"main.py\", [Unlocks.Carrots], costs, globals, 0, 1)\n"
     );
 }
 
 #[test]
-fn for_each_default_args_nested_functions_and_python_operators() {
+fn for_each_nested_functions_and_typed_let() {
     let source = r#"
-fn walk(steps: i32 = 4) {
+fn walk(steps: i32) {
     fn step_once() {
         move_dir(Direction::East);
     }
@@ -408,22 +412,101 @@ fn walk(steps: i32 = 4) {
         quick_print(item);
     }
 
-    for item in {3, 4} {
-        quick_print(item);
-    }
-
-    let half = steps // 2;
-    let power = 2 ** 3;
+    let half: i32 = steps / 2;
     step_once();
 }
 
 fn main() {
-    walk();
+    walk(4);
 }
 "#;
 
     assert_eq!(
         compile_source(source).unwrap(),
-        "def walk(steps=4):\n    def step_once():\n        move(East)\n    for item in [1, 2]:\n        quick_print(item)\n    for item in {3, 4}:\n        quick_print(item)\n    half = steps // 2\n    power = 2 ** 3\n    step_once()\n\nwalk()\n"
+        "def walk(steps):\n    def step_once():\n        move(East)\n    for item in [1, 2]:\n        quick_print(item)\n    half = steps / 2\n    step_once()\n\nwalk(4)\n"
+    );
+}
+
+#[test]
+fn strict_mode_rejects_python_output_syntax() {
+    assert_rejects(
+        "fn main() {\n    while True {\n    }\n}\n",
+        "Python風の `True` は使えません",
+    );
+    assert_rejects(
+        "fn main() {\n    for i in range(4) {\n    }\n}\n",
+        "`range(...)` は入力では使えません",
+    );
+    assert_rejects(
+        "fn main() {\n    plant(Entities.Bush);\n}\n",
+        "入力では `Entity` を使ってください",
+    );
+    assert_rejects(
+        "fn main() {\n    move(North);\n}\n",
+        "`move(...)` は出力側の書き方です",
+    );
+    assert_rejects(
+        "fn main() {\n    if get_ground_type() != Grounds.Soil {\n    }\n}\n",
+        "入力では `Ground` を使ってください",
+    );
+}
+
+#[test]
+fn strict_mode_rejects_python_only_convenience_syntax() {
+    assert_rejects(
+        "fn main() {\n    if can_harvest() and can_harvest() {\n    }\n}\n",
+        "Python風の `and` は使えません",
+    );
+    assert_rejects(
+        "fn main() {\n    let costs = {Item::Carrot_Seed: 10};\n}\n",
+        "Python風の dict/set リテラルは入力では使えません",
+    );
+    assert_rejects(
+        "fn main() {\n    for item in {1, 2} {\n    }\n}\n",
+        "Python風の dict/set リテラルは入力では使えません",
+    );
+    assert_rejects(
+        "fn main() {\n    let half = 5 // 2;\n}\n",
+        "Python風の `//` 除算は入力では使えません",
+    );
+    assert_rejects(
+        "fn main() {\n    let power = 2 ** 3;\n}\n",
+        "`**` はRustの演算子ではありません",
+    );
+    assert_rejects(
+        "fn step(n: i32 = 1) {\n}\n\nfn main() {\n    step(1);\n}\n",
+        "デフォルト引数はRustでは使えません",
+    );
+}
+
+#[test]
+fn strict_mode_accepts_rust_spellings_for_game_api() {
+    let source = r#"
+fn main() {
+    let mut pulse: bool = true;
+    loop {
+        for i in 0..4 {
+            if get_ground_type() != Ground::Soil {
+                till();
+            }
+            plant(Entity::Bush);
+            move_dir(Direction::North);
+            pulse = !pulse;
+        }
+    }
+}
+"#;
+
+    assert_eq!(
+        compile_source(source).unwrap(),
+        "pulse = True\nwhile True:\n    for i in range(4):\n        if get_ground_type() != Grounds.Soil:\n            till()\n        plant(Entities.Bush)\n        move(North)\n        pulse = not pulse\n"
+    );
+}
+
+fn assert_rejects(source: &str, expected: &str) {
+    let err = compile_source(source).unwrap_err().to_string();
+    assert!(
+        err.contains(expected),
+        "expected {expected:?} in error:\n{err}"
     );
 }

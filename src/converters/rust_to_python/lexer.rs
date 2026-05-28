@@ -1,4 +1,5 @@
-use crate::error::FarmError;
+use super::error::RustToPythonError;
+use super::ir::ExprToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
@@ -18,19 +19,19 @@ pub enum TokenKind {
 }
 
 impl Token {
-    pub fn expr_token(&self) -> Option<crate::ir::ExprToken> {
+    pub fn expr_token(&self) -> Option<ExprToken> {
         match &self.kind {
-            TokenKind::Ident(value) => Some(crate::ir::ExprToken::Ident(value.clone())),
-            TokenKind::Number(value) => Some(crate::ir::ExprToken::Number(value.clone())),
-            TokenKind::String(value) => Some(crate::ir::ExprToken::String(value.clone())),
-            TokenKind::Symbol(value) => Some(crate::ir::ExprToken::Symbol(*value)),
-            TokenKind::Operator(value) => Some(crate::ir::ExprToken::Operator(value.clone())),
+            TokenKind::Ident(value) => Some(ExprToken::Ident(value.clone())),
+            TokenKind::Number(value) => Some(ExprToken::Number(value.clone())),
+            TokenKind::String(value) => Some(ExprToken::String(value.clone())),
+            TokenKind::Symbol(value) => Some(ExprToken::Symbol(*value)),
+            TokenKind::Operator(value) => Some(ExprToken::Operator(value.clone())),
             TokenKind::Comment(_) => None,
         }
     }
 }
 
-pub fn lex(source: &str) -> Result<Vec<Token>, FarmError> {
+pub fn lex(source: &str) -> Result<Vec<Token>, RustToPythonError> {
     let chars: Vec<char> = source.chars().collect();
     let mut lexer = Lexer {
         chars,
@@ -52,7 +53,7 @@ struct Lexer {
 }
 
 impl Lexer {
-    fn lex_all(&mut self) -> Result<(), FarmError> {
+    fn lex_all(&mut self) -> Result<(), RustToPythonError> {
         while let Some(ch) = self.peek() {
             match ch {
                 ' ' | '\t' | '\r' => {
@@ -84,7 +85,7 @@ impl Lexer {
                     self.lex_operator()?;
                 }
                 _ => {
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         format!("予期しない文字 `{ch}`"),
                         self.line,
                         self.column,
@@ -114,7 +115,7 @@ impl Lexer {
         self.push(TokenKind::Comment(value), line, column);
     }
 
-    fn lex_block_comment(&mut self) -> Result<(), FarmError> {
+    fn lex_block_comment(&mut self) -> Result<(), RustToPythonError> {
         let line = self.line;
         let column = self.column;
         self.advance();
@@ -133,14 +134,14 @@ impl Lexer {
             self.advance();
         }
 
-        Err(FarmError::new(
+        Err(RustToPythonError::new(
             "ブロックコメントが閉じられていません",
             line,
             column,
         ))
     }
 
-    fn lex_string(&mut self) -> Result<(), FarmError> {
+    fn lex_string(&mut self) -> Result<(), RustToPythonError> {
         let line = self.line;
         let column = self.column;
         let mut value = String::new();
@@ -163,7 +164,7 @@ impl Lexer {
                     return Ok(());
                 }
                 '\n' => {
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "文字列リテラルが閉じられていません",
                         line,
                         column,
@@ -173,7 +174,7 @@ impl Lexer {
             }
         }
 
-        Err(FarmError::new(
+        Err(RustToPythonError::new(
             "文字列リテラルが閉じられていません",
             line,
             column,
@@ -232,7 +233,7 @@ impl Lexer {
         self.push(TokenKind::Ident(value), line, column);
     }
 
-    fn lex_operator(&mut self) -> Result<(), FarmError> {
+    fn lex_operator(&mut self) -> Result<(), RustToPythonError> {
         let line = self.line;
         let column = self.column;
         let ch = self.advance().expect("peeked character exists");
@@ -283,7 +284,7 @@ impl Lexer {
                 self.advance();
                 "->"
             }
-            ('|', _) => return Err(FarmError::new("`||` が必要です", line, column)),
+            ('|', _) => return Err(RustToPythonError::new("`||` が必要です", line, column)),
             _ => {
                 let text = ch.to_string();
                 self.push(TokenKind::Operator(text), line, column);

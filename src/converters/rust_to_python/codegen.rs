@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::api_map;
-use crate::ir::{
-    ElseBranch, Expr, ExprToken, FarmIr, Function, FunctionParam, Stmt, StructFactory,
+use super::api_map;
+use super::ir::{
+    ElseBranch, Expr, ExprToken, Function, FunctionParam, Program, Stmt, StructFactory,
 };
 
-pub fn generate(program: &FarmIr) -> String {
+pub fn generate(program: &Program) -> String {
     let mut lines = Vec::new();
     let context = CodegenContext::new(program);
 
@@ -46,7 +46,7 @@ struct CodegenContext {
 }
 
 impl CodegenContext {
-    fn new(program: &FarmIr) -> Self {
+    fn new(program: &Program) -> Self {
         Self {
             namespace_aliases: program
                 .namespace_aliases

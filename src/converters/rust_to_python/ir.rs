@@ -7,8 +7,6 @@ pub struct Program {
     pub main: Vec<Stmt>,
 }
 
-pub type FarmIr = Program;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Constant {
     pub name: String,

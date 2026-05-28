@@ -10,13 +10,19 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use crate::ide_support::write_manifest;
+use crate::paths::display_path;
+use crate::project::{
+    FileStamp, compile_project_file, output_path_for, snapshot_output_files, snapshot_source_files,
+    sync_project,
+};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-    DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
-    FF_DONTCARE, FW_NORMAL, FillRect, FrameRect, HBRUSH, HDC, HFONT, InvalidateRect,
-    OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient, SetBkColor, SetBkMode, SetTextColor,
-    TRANSPARENT, UpdateWindow,
+    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateRoundRectRgn,
+    CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
+    DrawTextW, EndPaint, FF_DONTCARE, FW_NORMAL, FillRect, FrameRect, HBRUSH, HDC, HFONT,
+    InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient, SetBkColor, SetBkMode,
+    SetTextColor, SetWindowRgn, TRANSPARENT, UpdateWindow,
 };
 use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
@@ -39,10 +45,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_VISIBLE,
 };
 
-const CLASS_NAME: &str = "farmrs_window";
-const WINDOW_TITLE: &str = "farmrs - 自動変換";
-const CONFIG_FILE_NAME: &str = "farmrs.toml";
-const DEFAULT_MAIN_RS: &str = r#"use farmrs::prelude::*;
+const CLASS_NAME: &str = "transplanter_window";
+const WINDOW_TITLE: &str = "Transplanter / 耕訳機";
+const CONFIG_FILE_NAME: &str = "transplanter.toml";
+const DEFAULT_MAIN_RS: &str = r#"use transplanter_rust::prelude::*;
 
 fn main() {
     loop {
@@ -59,31 +65,67 @@ const ID_SRC_EDIT: i32 = 101;
 const ID_OUT_EDIT: i32 = 102;
 const ID_SRC_BROWSE: i32 = 201;
 const ID_OUT_BROWSE: i32 = 202;
-const ID_SAVE: i32 = 203;
 const ID_MINIMIZE: i32 = 204;
 const ID_CLOSE: i32 = 205;
-const ID_STATUS: i32 = 301;
-const ID_FLOW: i32 = 302;
 const ID_SRC_LABEL: i32 = 401;
 const ID_OUT_LABEL: i32 = 402;
 
 const TIMER_ID: usize = 1;
 const TIMER_INTERVAL_MS: u32 = 250;
 const WINDOW_WIDTH: i32 = 520;
-const WINDOW_HEIGHT: i32 = 236;
-const TITLE_HEIGHT: i32 = 28;
+const WINDOW_HEIGHT: i32 = 248;
+const TITLE_HEIGHT: i32 = 40;
 
-const COLOR_BACKGROUND: u32 = rgb(37, 37, 37);
-const COLOR_PANEL: u32 = rgb(37, 37, 37);
-const COLOR_PANEL_DARK: u32 = rgb(29, 29, 29);
-const COLOR_TITLE: u32 = rgb(88, 97, 90);
-const COLOR_BORDER: u32 = rgb(18, 20, 18);
-const COLOR_TEXT: u32 = rgb(224, 226, 214);
-const COLOR_MUTED: u32 = rgb(188, 194, 181);
-const COLOR_ACCENT: u32 = rgb(171, 205, 0);
-const COLOR_BUTTON: u32 = rgb(101, 123, 0);
-const COLOR_BUTTON_DOWN: u32 = rgb(76, 92, 0);
-const COLOR_EDIT: u32 = rgb(29, 29, 29);
+const COLOR_BACKGROUND: u32 = rgb(41, 41, 41);
+const COLOR_PANEL: u32 = rgb(41, 41, 41);
+const COLOR_TITLE: u32 = rgb(85, 85, 85);
+const COLOR_BORDER: u32 = rgb(72, 72, 72);
+const COLOR_TEXT: u32 = rgb(225, 225, 225);
+const COLOR_MUTED: u32 = rgb(202, 202, 202);
+const COLOR_ACCENT: u32 = rgb(170, 204, 0);
+const COLOR_BUTTON: u32 = rgb(104, 126, 0);
+const COLOR_BUTTON_DOWN: u32 = rgb(83, 101, 0);
+const COLOR_EDIT: u32 = rgb(33, 33, 33);
+
+const CLOSE_ICON: [&str; 9] = [
+    "##.....##",
+    ".##...##.",
+    "..##.##..",
+    "...###...",
+    "....#....",
+    "...###...",
+    "..##.##..",
+    ".##...##.",
+    "##.....##",
+];
+
+const MINIMIZE_ICON: [&str; 3] = ["###########", "###########", "###########"];
+
+const FOLDER_ICON: [&str; 9] = [
+    "..........",
+    ".####.....",
+    ".#######..",
+    ".########.",
+    ".##....##.",
+    ".##....##.",
+    ".########.",
+    ".########.",
+    "..........",
+];
+
+const DOWN_ARROW_ICON: [&str; 11] = [
+    "....###....",
+    "....###....",
+    "....###....",
+    "....###....",
+    "....###....",
+    "###########",
+    ".#########.",
+    "..#######..",
+    "...#####...",
+    "....###....",
+    ".....#.....",
+];
 
 const fn rgb(red: u8, green: u8, blue: u8) -> u32 {
     red as u32 | ((green as u32) << 8) | ((blue as u32) << 16)
@@ -96,12 +138,13 @@ thread_local! {
 struct Theme {
     background: HBRUSH,
     panel: HBRUSH,
-    panel_dark: HBRUSH,
     title: HBRUSH,
     border: HBRUSH,
     button: HBRUSH,
     button_down: HBRUSH,
     edit: HBRUSH,
+    icon: HBRUSH,
+    accent: HBRUSH,
     font: HFONT,
 }
 
@@ -111,12 +154,13 @@ impl Theme {
         Self {
             background: CreateSolidBrush(COLOR_BACKGROUND),
             panel: CreateSolidBrush(COLOR_PANEL),
-            panel_dark: CreateSolidBrush(COLOR_PANEL_DARK),
             title: CreateSolidBrush(COLOR_TITLE),
             border: CreateSolidBrush(COLOR_BORDER),
             button: CreateSolidBrush(COLOR_BUTTON),
             button_down: CreateSolidBrush(COLOR_BUTTON_DOWN),
             edit: CreateSolidBrush(COLOR_EDIT),
+            icon: CreateSolidBrush(COLOR_TEXT),
+            accent: CreateSolidBrush(COLOR_ACCENT),
             font: CreateFontW(
                 -15,
                 0,
@@ -161,6 +205,25 @@ struct WatchHandle {
     out_dir: PathBuf,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy)]
+struct ControlRect {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+impl ControlRect {
+    fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
 }
 
 enum GuiEvent {
@@ -228,7 +291,12 @@ unsafe fn run_window() -> Result<(), String> {
 
     if hwnd.is_null() {
         let _ = Box::from_raw(state_ptr);
-        return Err("エラー: farmrs のウィンドウを作成できませんでした".to_string());
+        return Err("エラー: Transplanter のウィンドウを作成できませんでした".to_string());
+    }
+
+    let rounded = CreateRoundRectRgn(0, 0, WINDOW_WIDTH + 1, WINDOW_HEIGHT + 1, 10, 10);
+    if !rounded.is_null() {
+        SetWindowRgn(hwnd, rounded, 1);
     }
 
     ShowWindow(hwnd, SW_SHOW);
@@ -299,7 +367,6 @@ unsafe extern "system" fn wnd_proc(
             match id {
                 ID_SRC_BROWSE => browse_and_set_path(hwnd, ID_SRC_EDIT, true),
                 ID_OUT_BROWSE => browse_and_set_path(hwnd, ID_OUT_EDIT, false),
-                ID_SAVE => save_controls_and_start(hwnd),
                 ID_MINIMIZE => {
                     ShowWindow(hwnd, SW_MINIMIZE);
                 }
@@ -356,23 +423,17 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
     create_control(
         hwnd,
         "BUTTON",
-        "_",
+        "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        472,
-        7,
-        16,
-        16,
+        ControlRect::new(452, 6, 29, 28),
         ID_MINIMIZE,
     );
     create_control(
         hwnd,
         "BUTTON",
-        "X",
+        "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        492,
-        7,
-        16,
-        16,
+        ControlRect::new(486, 6, 29, 28),
         ID_CLOSE,
     );
     create_control(
@@ -380,10 +441,7 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "STATIC",
         "rs_src のパス",
         WS_CHILD | WS_VISIBLE,
-        18,
-        36,
-        180,
-        20,
+        ControlRect::new(20, 60, 180, 20),
         ID_SRC_LABEL,
     );
     let src_edit = create_control(
@@ -391,21 +449,15 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "EDIT",
         "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-        18,
-        58,
-        420,
-        24,
+        ControlRect::new(20, 86, 420, 26),
         ID_SRC_EDIT,
     );
     create_control(
         hwnd,
         "BUTTON",
-        "...",
+        "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        448,
-        58,
-        44,
-        24,
+        ControlRect::new(452, 86, 42, 26),
         ID_SRC_BROWSE,
     );
 
@@ -414,10 +466,7 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "STATIC",
         "ゲームの Save フォルダ",
         WS_CHILD | WS_VISIBLE,
-        18,
-        92,
-        220,
-        20,
+        ControlRect::new(20, 165, 220, 20),
         ID_OUT_LABEL,
     );
     let out_edit = create_control(
@@ -425,64 +474,22 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "EDIT",
         "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-        18,
-        114,
-        420,
-        24,
+        ControlRect::new(20, 191, 420, 26),
         ID_OUT_EDIT,
     );
     create_control(
         hwnd,
         "BUTTON",
-        "...",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        448,
-        114,
-        44,
-        24,
-        ID_OUT_BROWSE,
-    );
-
-    create_control(
-        hwnd,
-        "STATIC",
-        "rs_src  ->  Save",
-        WS_CHILD | WS_VISIBLE,
-        18,
-        158,
-        260,
-        22,
-        ID_FLOW,
-    );
-    create_control(
-        hwnd,
-        "BUTTON",
-        "保存",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        410,
-        153,
-        82,
-        28,
-        ID_SAVE,
-    );
-    create_control(
-        hwnd,
-        "STATIC",
         "",
-        WS_CHILD | WS_VISIBLE,
-        18,
-        195,
-        474,
-        28,
-        ID_STATUS,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
+        ControlRect::new(452, 191, 42, 26),
+        ID_OUT_BROWSE,
     );
 
     set_window_text(src_edit, &state.config.src_dir);
     set_window_text(out_edit, &state.config.out_dir);
     if let Some(error) = &state.startup_error {
         set_status(hwnd, error);
-    } else {
-        set_status(hwnd, "待機中: Saveフォルダを選択");
     }
 }
 
@@ -491,10 +498,7 @@ unsafe fn create_control(
     class_name: &str,
     text: &str,
     style: u32,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
+    bounds: ControlRect,
     id: i32,
 ) -> HWND {
     let class_name = wide(class_name);
@@ -504,10 +508,10 @@ unsafe fn create_control(
         class_name.as_ptr(),
         text.as_ptr(),
         style,
-        x,
-        y,
-        width,
-        height,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
         parent,
         id as isize as HMENU,
         GetModuleHandleW(null()),
@@ -525,6 +529,10 @@ unsafe fn create_control(
 unsafe fn paint_window(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let hdc = BeginPaint(hwnd, &mut ps);
+    let arrow_offset = state_from_hwnd(hwnd)
+        .filter(|state| state.active)
+        .map(|state| (state.spinner % 3) as i32)
+        .unwrap_or(0);
 
     with_theme(|theme| {
         let background = RECT {
@@ -544,38 +552,13 @@ unsafe fn paint_window(hwnd: HWND) {
         };
         FillRect(hdc, &title, theme.title);
 
-        let accent_line = RECT {
-            left: 1,
-            top: TITLE_HEIGHT,
-            right: WINDOW_WIDTH - 1,
-            bottom: TITLE_HEIGHT + 1,
+        let arrow = RECT {
+            left: 0,
+            top: 126 + arrow_offset,
+            right: WINDOW_WIDTH,
+            bottom: 160 + arrow_offset,
         };
-        FillRect(hdc, &accent_line, theme.border);
-
-        let dark_bottom = RECT {
-            left: 1,
-            top: 188,
-            right: WINDOW_WIDTH - 1,
-            bottom: WINDOW_HEIGHT - 1,
-        };
-        FillRect(hdc, &dark_bottom, theme.panel_dark);
-
-        let mut title_text_rect = RECT {
-            left: 16,
-            top: 1,
-            right: 260,
-            bottom: TITLE_HEIGHT,
-        };
-        let title_text = wide("farmrs watch");
-        SetBkMode(hdc, TRANSPARENT as i32);
-        SetTextColor(hdc, COLOR_TEXT);
-        DrawTextW(
-            hdc,
-            title_text.as_ptr(),
-            -1,
-            &mut title_text_rect,
-            DT_SINGLELINE | DT_VCENTER,
-        );
+        draw_mask_icon(hdc, &arrow, &DOWN_ARROW_ICON, 3, theme.accent);
     });
 
     EndPaint(hwnd, &ps);
@@ -585,7 +568,7 @@ unsafe fn hit_test(hwnd: HWND) -> LRESULT {
     let mut point: POINT = std::mem::zeroed();
     if GetCursorPos(&mut point) != 0 {
         ScreenToClient(hwnd, &mut point);
-        if point.y >= 0 && point.y < TITLE_HEIGHT && point.x >= 0 && point.x < WINDOW_WIDTH - 56 {
+        if point.y >= 0 && point.y < TITLE_HEIGHT && point.x < WINDOW_WIDTH - 76 {
             return HTCAPTION as LRESULT;
         }
     }
@@ -607,14 +590,10 @@ unsafe fn color_control(msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 theme.edit as LRESULT
             }
             WM_CTLCOLORSTATIC => {
-                if id == ID_FLOW || id == ID_SRC_LABEL || id == ID_OUT_LABEL {
+                if id == ID_SRC_LABEL || id == ID_OUT_LABEL {
                     SetTextColor(hdc, COLOR_ACCENT);
                     SetBkColor(hdc, COLOR_PANEL);
                     theme.panel as LRESULT
-                } else if id == ID_STATUS {
-                    SetTextColor(hdc, COLOR_MUTED);
-                    SetBkColor(hdc, COLOR_PANEL_DARK);
-                    theme.panel_dark as LRESULT
                 } else {
                     SetTextColor(hdc, COLOR_MUTED);
                     SetBkColor(hdc, COLOR_PANEL);
@@ -634,6 +613,7 @@ unsafe fn color_control(msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 unsafe fn draw_button(lparam: LPARAM) {
     let item = &*(lparam as *const DRAWITEMSTRUCT);
     let selected = item.itemState & ODS_SELECTED != 0;
+    let id = GetDlgCtrlID(item.hwndItem);
 
     with_theme(|theme| {
         let brush = if selected {
@@ -643,6 +623,22 @@ unsafe fn draw_button(lparam: LPARAM) {
         };
         FillRect(item.hDC, &item.rcItem, brush);
         FrameRect(item.hDC, &item.rcItem, theme.border);
+
+        match id {
+            ID_MINIMIZE => {
+                draw_mask_icon(item.hDC, &item.rcItem, &MINIMIZE_ICON, 2, theme.icon);
+                return;
+            }
+            ID_CLOSE => {
+                draw_mask_icon(item.hDC, &item.rcItem, &CLOSE_ICON, 2, theme.icon);
+                return;
+            }
+            ID_SRC_BROWSE | ID_OUT_BROWSE => {
+                draw_mask_icon(item.hDC, &item.rcItem, &FOLDER_ICON, 2, theme.icon);
+                return;
+            }
+            _ => {}
+        }
 
         let mut text_rect = item.rcItem;
         let text = get_window_text(item.hwndItem);
@@ -657,6 +653,30 @@ unsafe fn draw_button(lparam: LPARAM) {
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
     });
+}
+
+unsafe fn draw_mask_icon(hdc: HDC, bounds: &RECT, icon: &[&str], scale: i32, brush: HBRUSH) {
+    let icon_width = icon.iter().map(|row| row.len()).max().unwrap_or_default() as i32 * scale;
+    let icon_height = icon.len() as i32 * scale;
+    let left = bounds.left + ((bounds.right - bounds.left) - icon_width) / 2;
+    let top = bounds.top + ((bounds.bottom - bounds.top) - icon_height) / 2;
+
+    for (row_index, row) in icon.iter().enumerate() {
+        for (column_index, pixel) in row.as_bytes().iter().enumerate() {
+            if *pixel != b'#' {
+                continue;
+            }
+            let x = left + column_index as i32 * scale;
+            let y = top + row_index as i32 * scale;
+            let rect = RECT {
+                left: x,
+                top: y,
+                right: x + scale,
+                bottom: y + scale,
+            };
+            FillRect(hdc, &rect, brush);
+        }
+    }
 }
 
 unsafe fn browse_and_set_path(hwnd: HWND, edit_id: i32, is_src: bool) {
@@ -707,20 +727,6 @@ unsafe fn choose_folder(hwnd: HWND) -> Option<String> {
     Some(string_from_wide_buffer(&path_buf))
 }
 
-unsafe fn save_controls_and_start(hwnd: HWND) {
-    let src = get_control_text(hwnd, ID_SRC_EDIT);
-    let out = get_control_text(hwnd, ID_OUT_EDIT);
-
-    if let Some(state) = state_from_hwnd(hwnd) {
-        state.config.src_dir = src.clone();
-        state.config.out_dir = out.clone();
-        state.last_src_text = src;
-        state.last_out_text = out;
-    }
-
-    save_config_and_start(hwnd);
-}
-
 unsafe fn save_if_edits_changed(hwnd: HWND) {
     let src = get_control_text(hwnd, ID_SRC_EDIT);
     let out = get_control_text(hwnd, ID_OUT_EDIT);
@@ -757,7 +763,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
         stop_watcher(state);
         state.active = false;
         set_status(hwnd, &err);
-        set_flow(hwnd, "rs_src  ->  Save");
+        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
@@ -765,7 +771,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
         stop_watcher(state);
         state.active = false;
         set_status(hwnd, "待機中: Saveフォルダを選択");
-        set_flow(hwnd, "rs_src  ->  Save");
+        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
@@ -776,7 +782,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
         stop_watcher(state);
         state.active = false;
         set_status(hwnd, "エラー: rs_src が見つかりません");
-        set_flow(hwnd, "rs_src  ->  Save");
+        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
@@ -787,7 +793,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
             hwnd,
             &format!("エラー: Save フォルダを作成できません: {err}"),
         );
-        set_flow(hwnd, "rs_src  ->  Save");
+        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
@@ -823,7 +829,7 @@ fn watch_loop(
     stop: Arc<AtomicBool>,
     tx: mpsc::Sender<GuiEvent>,
 ) {
-    match super::sync_project(&src_dir, &out_dir) {
+    match sync_project(&src_dir, &out_dir) {
         Ok(count) => send_status(&tx, format!("OK: {count} 件を変換しました")),
         Err(err) => send_error(&tx, err),
     }
@@ -840,14 +846,14 @@ fn watch_loop(
         let current_sources = snapshot_sources_or_report(&src_dir, &tx);
         let current_outputs = snapshot_outputs_or_report(&src_dir, &out_dir, &current_sources, &tx);
 
-        if current_sources.keys().ne(seen_sources.keys()) {
-            if let Err(err) = super::write_ide_manifest(&src_dir) {
-                send_error(&tx, err);
-            }
+        if current_sources.keys().ne(seen_sources.keys())
+            && let Err(err) = write_manifest(&src_dir)
+        {
+            send_error(&tx, err);
         }
 
         for (input_path, stamp) in &current_sources {
-            let Ok(output_path) = super::output_path_for(&src_dir, &out_dir, input_path) else {
+            let Ok(output_path) = output_path_for(&src_dir, &out_dir, input_path) else {
                 continue;
             };
             let source_changed = seen_sources.get(input_path) != Some(stamp);
@@ -855,7 +861,7 @@ fn watch_loop(
                 seen_outputs.get(&output_path) != current_outputs.get(&output_path);
 
             if source_changed || output_changed {
-                match super::compile_project_file(&src_dir, &out_dir, input_path) {
+                match compile_project_file(&src_dir, &out_dir, input_path) {
                     Ok(output_path) => send_status(
                         &tx,
                         format!("OK: {} を更新しました", file_name_for_status(&output_path)),
@@ -873,8 +879,8 @@ fn watch_loop(
 fn snapshot_sources_or_report(
     src_dir: &Path,
     tx: &mpsc::Sender<GuiEvent>,
-) -> std::collections::BTreeMap<PathBuf, super::FileStamp> {
-    match super::snapshot_source_files(src_dir) {
+) -> std::collections::BTreeMap<PathBuf, FileStamp> {
+    match snapshot_source_files(src_dir) {
         Ok(snapshot) => snapshot,
         Err(err) => {
             send_error(tx, err);
@@ -886,10 +892,10 @@ fn snapshot_sources_or_report(
 fn snapshot_outputs_or_report(
     src_dir: &Path,
     out_dir: &Path,
-    sources: &std::collections::BTreeMap<PathBuf, super::FileStamp>,
+    sources: &std::collections::BTreeMap<PathBuf, FileStamp>,
     tx: &mpsc::Sender<GuiEvent>,
-) -> std::collections::BTreeMap<PathBuf, Option<super::FileStamp>> {
-    match super::snapshot_output_files(src_dir, out_dir, sources.keys()) {
+) -> std::collections::BTreeMap<PathBuf, Option<FileStamp>> {
+    match snapshot_output_files(src_dir, out_dir, sources.keys()) {
         Ok(snapshot) => snapshot,
         Err(err) => {
             send_error(tx, err);
@@ -925,7 +931,7 @@ fn file_name_for_status(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(str::to_string)
-        .unwrap_or_else(|| super::display_path(path))
+        .unwrap_or_else(|| display_path(path))
 }
 
 fn compact_error_message(message: &str) -> String {
@@ -933,7 +939,7 @@ fn compact_error_message(message: &str) -> String {
         return message.to_string();
     };
 
-    for marker in [".farmrs:", ".rs:", ".py:"] {
+    for marker in [".rs:", ".py:"] {
         if let Some(marker_pos) = body.find(marker) {
             let path_end = marker_pos + marker.len() - 1;
             let path = &body[..path_end];
@@ -957,12 +963,8 @@ unsafe fn tick_spinner(hwnd: HWND) {
         return;
     }
 
-    let marks = ["-", "\\", "|", "/"];
-    state.spinner = (state.spinner + 1) % marks.len();
-    set_flow(
-        hwnd,
-        &format!("rs_src  ->  Save   {}", marks[state.spinner]),
-    );
+    state.spinner = (state.spinner + 1) % 3;
+    InvalidateRect(hwnd, null(), 0);
 }
 
 unsafe fn drain_events(hwnd: HWND) {
@@ -995,13 +997,7 @@ unsafe fn state_from_hwnd(hwnd: HWND) -> Option<&'static mut GuiState> {
     ptr.as_mut()
 }
 
-unsafe fn set_status(hwnd: HWND, text: &str) {
-    set_control_text(hwnd, ID_STATUS, text);
-}
-
-unsafe fn set_flow(hwnd: HWND, text: &str) {
-    set_control_text(hwnd, ID_FLOW, text);
-}
+unsafe fn set_status(_hwnd: HWND, _text: &str) {}
 
 unsafe fn get_control_text(parent: HWND, id: i32) -> String {
     let control = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(parent, id);
@@ -1010,6 +1006,9 @@ unsafe fn get_control_text(parent: HWND, id: i32) -> String {
 
 unsafe fn set_control_text(parent: HWND, id: i32, text: &str) {
     let control = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(parent, id);
+    if control.is_null() {
+        return;
+    }
     set_window_text(control, text);
     InvalidateRect(control, null(), 1);
 }
@@ -1086,7 +1085,7 @@ fn ensure_initial_workspace(
     fs::create_dir_all(&src_dir).map_err(|err| {
         format!(
             "エラー: `{}` を作成できません: {err}",
-            super::display_path(&src_dir)
+            display_path(&src_dir)
         )
     })?;
 
@@ -1095,33 +1094,25 @@ fn ensure_initial_workspace(
         fs::write(&main_path, DEFAULT_MAIN_RS).map_err(|err| {
             format!(
                 "エラー: `{}` に書き込めません: {err}",
-                super::display_path(&main_path)
+                display_path(&main_path)
             )
         })?;
     }
 
-    super::write_ide_manifest(&src_dir)?;
+    write_manifest(&src_dir)?;
     Ok(())
 }
 
 fn read_config(path: &Path) -> Result<Config, String> {
-    let contents = fs::read_to_string(path).map_err(|err| {
-        format!(
-            "エラー: `{}` を読み込めません: {err}",
-            super::display_path(path)
-        )
-    })?;
+    let contents = fs::read_to_string(path)
+        .map_err(|err| format!("エラー: `{}` を読み込めません: {err}", display_path(path)))?;
     parse_config(&contents)
 }
 
 fn write_config(path: &Path, config: &Config) -> Result<(), String> {
     let contents = render_config(config);
-    fs::write(path, contents).map_err(|err| {
-        format!(
-            "エラー: `{}` に書き込めません: {err}",
-            super::display_path(path)
-        )
-    })
+    fs::write(path, contents)
+        .map_err(|err| format!("エラー: `{}` に書き込めません: {err}", display_path(path)))
 }
 
 fn render_config(config: &Config) -> String {
@@ -1174,7 +1165,7 @@ fn parse_toml_string(value: &str) -> Result<String, String> {
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
     else {
-        return Err("エラー: farmrs.toml の文字列は \"...\" で囲んでください".to_string());
+        return Err("エラー: 設定ファイルの文字列は \"...\" で囲んでください".to_string());
     };
 
     let mut output = String::new();
@@ -1186,7 +1177,7 @@ fn parse_toml_string(value: &str) -> Result<String, String> {
         }
 
         let Some(escaped) = chars.next() else {
-            return Err("エラー: farmrs.toml の文字列エスケープが途中で終わっています".to_string());
+            return Err("エラー: 設定ファイルの文字列エスケープが途中で終わっています".to_string());
         };
         match escaped {
             '\\' => output.push('\\'),
@@ -1225,16 +1216,17 @@ mod tests {
     #[test]
     fn toml_string_escapes_windows_paths() {
         assert_eq!(
-            toml_string(r#"C:\Users\Slump\The "Farm""#),
-            r#""C:\\Users\\Slump\\The \"Farm\"""#
+            toml_string(r#"C:\Users\Player\The "Farm""#),
+            r#""C:\\Users\\Player\\The \"Farm\"""#
         );
     }
 
     #[test]
     fn config_round_trips_paths() {
         let config = Config {
-            src_dir: r"C:\Users\Slump\OneDrive\デスクトップ\farming\rs_src".to_string(),
-            out_dir: r"C:\Users\Slump\AppData\LocalLow\TheFarmerWasReplaced\Saves\Rust".to_string(),
+            src_dir: r"C:\Users\Player\Desktop\farming\rs_src".to_string(),
+            out_dir: r"C:\Users\Player\AppData\LocalLow\TheFarmerWasReplaced\Saves\Rust"
+                .to_string(),
         };
         let rendered = render_config(&config);
         assert_eq!(parse_config(&rendered).unwrap(), config);
@@ -1243,7 +1235,7 @@ mod tests {
     #[test]
     fn initial_setup_creates_project_files() {
         let workspace = temp_workspace("initial_setup");
-        let config_path = workspace.join("farmrs.toml");
+        let config_path = workspace.join("transplanter.toml");
 
         let (config, startup_error) = load_or_create_initial_workspace(&config_path);
 
@@ -1257,16 +1249,17 @@ mod tests {
                 .unwrap()
                 .contains("move_dir(Direction::East);")
         );
-        assert!(workspace.join("rs_src").join("Cargo.toml").is_file());
+        assert!(workspace.join("Cargo.toml").is_file());
+        assert!(!workspace.join("rs_src").join("Cargo.toml").exists());
         assert!(
             workspace
-                .join("rs_src")
-                .join(".farmrs_ide")
-                .join("farmrs")
+                .join(".transplanter_ide")
+                .join("transplanter_rust")
                 .join("src")
                 .join("prelude.rs")
                 .is_file()
         );
+        assert!(!workspace.join("rs_src").join(".transplanter_ide").exists());
 
         let _ = fs::remove_dir_all(workspace);
     }
@@ -1283,7 +1276,7 @@ mod tests {
         .unwrap();
 
         let (_config, startup_error) =
-            load_or_create_initial_workspace(&workspace.join("farmrs.toml"));
+            load_or_create_initial_workspace(&workspace.join("transplanter.toml"));
 
         assert_eq!(startup_error, None);
         assert_eq!(
@@ -1300,7 +1293,10 @@ mod tests {
         let src_dir = workspace.join("rs_src");
         let out_dir = workspace.join("save");
         fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&out_dir).unwrap();
         fs::write(src_dir.join("main.rs"), "fn main() {\n    harvest()\n}\n").unwrap();
+        let output_path = out_dir.join("main.py");
+        fs::write(&output_path, "harvest()\n").unwrap();
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -1310,9 +1306,39 @@ mod tests {
         let message = recv_event_text(&rx);
         stop.store(true, Ordering::Relaxed);
         thread.join().unwrap();
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), "harvest()\n");
         let _ = fs::remove_dir_all(workspace);
 
         assert!(message.contains("式文の後に `;` が必要です"), "{message}");
+    }
+
+    #[test]
+    fn watch_loop_reports_rust_check_errors_without_overwriting_output() {
+        let workspace = temp_workspace("rust_check_error");
+        let src_dir = workspace.join("rs_src");
+        let out_dir = workspace.join("save");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&out_dir).unwrap();
+        fs::write(
+            src_dir.join("main.rs"),
+            "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n    missing_game_api();\n}\n",
+        )
+        .unwrap();
+        let output_path = out_dir.join("main.py");
+        fs::write(&output_path, "harvest()\n").unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = thread::spawn(move || watch_loop(src_dir, out_dir, thread_stop, tx));
+
+        let message = recv_event_text(&rx);
+        stop.store(true, Ordering::Relaxed);
+        thread.join().unwrap();
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), "harvest()\n");
+        let _ = fs::remove_dir_all(workspace);
+
+        assert!(message.contains("missing_game_api"), "{message}");
     }
 
     #[test]
@@ -1349,7 +1375,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = env::temp_dir().join(format!(
-            "farmrs_gui_{name}_{}_{}",
+            "transplanter_gui_{name}_{}_{}",
             std::process::id(),
             suffix
         ));

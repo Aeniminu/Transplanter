@@ -1,11 +1,12 @@
-use crate::error::FarmError;
-use crate::ir::{
-    Constant, ElseBranch, Expr, FarmIr, Function, FunctionParam, NamespaceAlias, Program, Stmt,
+use super::error::RustToPythonError;
+use super::ir::{
+    Constant, ElseBranch, Expr, Function, FunctionParam, NamespaceAlias, Program, Stmt,
     StructFactory,
 };
-use crate::lexer::{Token, TokenKind};
+use super::lexer::{Token, TokenKind};
+use super::strict;
 
-pub fn parse(tokens: &[Token]) -> Result<FarmIr, FarmError> {
+pub fn parse(tokens: &[Token]) -> Result<Program, RustToPythonError> {
     Parser { tokens, pos: 0 }.parse_program()
 }
 
@@ -15,7 +16,7 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn parse_program(&mut self) -> Result<Program, FarmError> {
+    fn parse_program(&mut self) -> Result<Program, RustToPythonError> {
         let mut constants = Vec::new();
         let mut struct_factories = Vec::new();
         let mut namespace_aliases = Vec::new();
@@ -46,7 +47,7 @@ impl<'a> Parser<'a> {
             if function.name == "main" {
                 if !function.params.is_empty() {
                     let token = self.previous();
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "`fn main` に引数は指定できません",
                         token.line,
                         token.column,
@@ -54,7 +55,7 @@ impl<'a> Parser<'a> {
                 }
                 if main.is_some() {
                     let token = self.previous();
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "`fn main` が重複しています",
                         token.line,
                         token.column,
@@ -68,7 +69,11 @@ impl<'a> Parser<'a> {
 
         let Some(main) = main else {
             let (line, column) = self.end_position();
-            return Err(FarmError::new("`fn main` がありません", line, column));
+            return Err(RustToPythonError::new(
+                "`fn main` がありません",
+                line,
+                column,
+            ));
         };
 
         Ok(Program {
@@ -80,7 +85,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_function_after_fn(&mut self) -> Result<Function, FarmError> {
+    fn parse_function_after_fn(&mut self) -> Result<Function, RustToPythonError> {
         let name = self.expect_ident("関数名が必要です")?;
 
         if self.check_operator("<") {
@@ -102,7 +107,7 @@ impl<'a> Parser<'a> {
     fn parse_function_with_name_prefix(
         &mut self,
         namespace: &[String],
-    ) -> Result<Function, FarmError> {
+    ) -> Result<Function, RustToPythonError> {
         let original_name = self.expect_ident("関数名が必要です")?;
         let name = prefixed_name(namespace, &original_name);
 
@@ -122,7 +127,7 @@ impl<'a> Parser<'a> {
         Ok(Function { name, params, body })
     }
 
-    fn parse_params(&mut self) -> Result<Vec<FunctionParam>, FarmError> {
+    fn parse_params(&mut self) -> Result<Vec<FunctionParam>, RustToPythonError> {
         let mut params = Vec::new();
 
         while !self.check_symbol(')') {
@@ -134,13 +139,16 @@ impl<'a> Parser<'a> {
                 self.skip_param_type()?;
             }
 
-            let default = if self.match_operator("=") {
-                let value = self.collect_param_default()?;
-                self.require_expr(&value, "デフォルト引数には値が必要です")?;
-                Some(value)
-            } else {
-                None
-            };
+            if self.match_operator("=") {
+                let token = self.previous();
+                return Err(RustToPythonError::new(
+                    "デフォルト引数はRustでは使えません。引数を必須にするか、関数内で値を決めてください",
+                    token.line,
+                    token.column,
+                ));
+            }
+
+            let default = None;
 
             params.push(FunctionParam { name, default });
 
@@ -152,7 +160,7 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    fn skip_generics(&mut self) -> Result<(), FarmError> {
+    fn skip_generics(&mut self) -> Result<(), RustToPythonError> {
         self.expect_operator("<")?;
         let mut depth = 1usize;
 
@@ -172,10 +180,14 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new("generics の `>` が必要です", line, column))
+        Err(RustToPythonError::new(
+            "generics の `>` が必要です",
+            line,
+            column,
+        ))
     }
 
-    fn skip_param_type(&mut self) -> Result<(), FarmError> {
+    fn skip_param_type(&mut self) -> Result<(), RustToPythonError> {
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut brace_depth = 0usize;
@@ -239,48 +251,14 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(
+        Err(RustToPythonError::new(
             "引数リストが閉じられていません",
             line,
             column,
         ))
     }
 
-    fn collect_param_default(&mut self) -> Result<Expr, FarmError> {
-        let mut tokens = Vec::new();
-        let mut depth = ExprDepth::default();
-
-        while !self.is_eof() {
-            let token = self.peek().expect("not eof").clone();
-            match &token.kind {
-                TokenKind::Symbol(',') | TokenKind::Symbol(')') if depth.is_top_level() => {
-                    return Ok(Expr::new(tokens));
-                }
-                TokenKind::Comment(_) => {
-                    return Err(FarmError::new(
-                        "デフォルト引数が閉じられていません",
-                        token.line,
-                        token.column,
-                    ));
-                }
-                _ => depth.observe(&token.kind),
-            }
-
-            if let Some(expr_token) = token.expr_token() {
-                tokens.push(expr_token);
-            }
-            self.advance();
-        }
-
-        let (line, column) = self.end_position();
-        Err(FarmError::new(
-            "引数リストが閉じられていません",
-            line,
-            column,
-        ))
-    }
-
-    fn collect_for_iterable_expr(&mut self) -> Result<Expr, FarmError> {
+    fn collect_for_iterable_expr(&mut self) -> Result<Expr, RustToPythonError> {
         let mut tokens = Vec::new();
         let mut depth = ExprDepth::default();
 
@@ -288,17 +266,17 @@ impl<'a> Parser<'a> {
             let token = self.peek().expect("not eof").clone();
             match &token.kind {
                 TokenKind::Symbol('{') if depth.is_top_level() && !tokens.is_empty() => {
-                    return Ok(Expr::new(tokens));
+                    return finish_expr(tokens);
                 }
                 TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth.is_top_level() => {
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "for の後に `{` が必要です",
                         token.line,
                         token.column,
                     ));
                 }
                 TokenKind::Comment(_) => {
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "for の後に `{` が必要です",
                         token.line,
                         token.column,
@@ -307,14 +285,18 @@ impl<'a> Parser<'a> {
                 _ => depth.observe(&token.kind),
             }
 
-            if let Some(expr_token) = token.expr_token() {
-                tokens.push(expr_token);
+            if token.expr_token().is_some() {
+                tokens.push(token);
             }
             self.advance();
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new("for の後に `{` が必要です", line, column))
+        Err(RustToPythonError::new(
+            "for の後に `{` が必要です",
+            line,
+            column,
+        ))
     }
 
     fn match_metadata_item(
@@ -324,7 +306,7 @@ impl<'a> Parser<'a> {
         struct_factories: &mut Vec<StructFactory>,
         namespace_aliases: &mut Vec<NamespaceAlias>,
         functions: &mut Vec<Function>,
-    ) -> Result<bool, FarmError> {
+    ) -> Result<bool, RustToPythonError> {
         if self.match_keyword("struct") {
             self.parse_struct_item(namespace, struct_factories, namespace_aliases)?;
             return Ok(true);
@@ -368,7 +350,7 @@ impl<'a> Parser<'a> {
                 self.skip_statement_until_semicolon("extern crate 文の後に `;` が必要です")?;
                 return Ok(true);
             }
-            return Err(FarmError::new(
+            return Err(RustToPythonError::new(
                 "`crate` が必要です",
                 self.previous().line,
                 self.previous().column,
@@ -378,7 +360,7 @@ impl<'a> Parser<'a> {
         Ok(false)
     }
 
-    fn match_local_metadata_item(&mut self) -> Result<bool, FarmError> {
+    fn match_local_metadata_item(&mut self) -> Result<bool, RustToPythonError> {
         if self.match_keyword("struct")
             || self.match_keyword("enum")
             || self.match_keyword("mod")
@@ -404,7 +386,7 @@ impl<'a> Parser<'a> {
         namespace: &[String],
         struct_factories: &mut Vec<StructFactory>,
         namespace_aliases: &mut Vec<NamespaceAlias>,
-    ) -> Result<(), FarmError> {
+    ) -> Result<(), RustToPythonError> {
         let original_name = self.expect_ident("struct 名が必要です")?;
         let name = prefixed_name(namespace, &original_name);
         let mut path = namespace.to_vec();
@@ -431,13 +413,13 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_named_fields(&mut self) -> Result<Vec<String>, FarmError> {
+    fn parse_named_fields(&mut self) -> Result<Vec<String>, RustToPythonError> {
         let mut fields = Vec::new();
 
         while !self.check_symbol('}') {
             if self.is_eof() {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new(
+                return Err(RustToPythonError::new(
                     "struct 本体が閉じられていません",
                     line,
                     column,
@@ -459,14 +441,14 @@ impl<'a> Parser<'a> {
         Ok(fields)
     }
 
-    fn parse_tuple_fields(&mut self) -> Result<Vec<String>, FarmError> {
+    fn parse_tuple_fields(&mut self) -> Result<Vec<String>, RustToPythonError> {
         let mut fields = Vec::new();
         let mut index = 0usize;
 
         while !self.check_symbol(')') {
             if self.is_eof() {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new(
+                return Err(RustToPythonError::new(
                     "tuple struct が閉じられていません",
                     line,
                     column,
@@ -493,7 +475,7 @@ impl<'a> Parser<'a> {
         namespace: &[String],
         constants: &mut Vec<Constant>,
         namespace_aliases: &mut Vec<NamespaceAlias>,
-    ) -> Result<(), FarmError> {
+    ) -> Result<(), RustToPythonError> {
         let enum_name = self.expect_ident("enum 名が必要です")?;
 
         if self.check_operator("<") {
@@ -504,7 +486,7 @@ impl<'a> Parser<'a> {
         while !self.check_symbol('}') {
             if self.is_eof() {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new(
+                return Err(RustToPythonError::new(
                     "enum 本体が閉じられていません",
                     line,
                     column,
@@ -548,7 +530,7 @@ impl<'a> Parser<'a> {
         struct_factories: &mut Vec<StructFactory>,
         namespace_aliases: &mut Vec<NamespaceAlias>,
         functions: &mut Vec<Function>,
-    ) -> Result<(), FarmError> {
+    ) -> Result<(), RustToPythonError> {
         let module_name = self.expect_ident("module 名が必要です")?;
         if self.match_symbol(';') {
             return Ok(());
@@ -561,7 +543,7 @@ impl<'a> Parser<'a> {
         while !self.check_symbol('}') {
             if self.is_eof() {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new(
+                return Err(RustToPythonError::new(
                     "module 本体が閉じられていません",
                     line,
                     column,
@@ -608,7 +590,7 @@ impl<'a> Parser<'a> {
         namespace: &[String],
         namespace_aliases: &mut Vec<NamespaceAlias>,
         functions: &mut Vec<Function>,
-    ) -> Result<(), FarmError> {
+    ) -> Result<(), RustToPythonError> {
         if self.check_operator("<") {
             self.skip_generics()?;
         }
@@ -616,7 +598,7 @@ impl<'a> Parser<'a> {
         let header = self.collect_tokens_until_block("impl 本体の `{` が必要です")?;
         let target = infer_impl_target(&header).ok_or_else(|| {
             let (line, column) = self.end_position();
-            FarmError::new("impl 対象の型名が必要です", line, column)
+            RustToPythonError::new("impl 対象の型名が必要です", line, column)
         })?;
 
         self.expect_symbol('{')?;
@@ -626,7 +608,7 @@ impl<'a> Parser<'a> {
         while !self.check_symbol('}') {
             if self.is_eof() {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new(
+                return Err(RustToPythonError::new(
                     "impl 本体が閉じられていません",
                     line,
                     column,
@@ -654,23 +636,27 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn skip_return_type(&mut self) -> Result<(), FarmError> {
+    fn skip_return_type(&mut self) -> Result<(), RustToPythonError> {
         while !self.check_symbol('{') {
             let Some(token) = self.peek() else {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new("関数本体の `{` が必要です", line, column));
+                return Err(RustToPythonError::new(
+                    "関数本体の `{` が必要です",
+                    line,
+                    column,
+                ));
             };
 
             match &token.kind {
                 TokenKind::Symbol(';') | TokenKind::Symbol('}') => {
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "関数本体の `{` が必要です",
                         token.line,
                         token.column,
                     ));
                 }
                 TokenKind::Comment(_) => {
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "関数本体の `{` が必要です",
                         token.line,
                         token.column,
@@ -683,14 +669,18 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_block(&mut self) -> Result<Vec<Stmt>, FarmError> {
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, RustToPythonError> {
         self.expect_symbol('{')?;
         let mut body = Vec::new();
 
         while !self.check_symbol('}') {
             if self.is_eof() {
                 let (line, column) = self.end_position();
-                return Err(FarmError::new("ブロックが閉じられていません", line, column));
+                return Err(RustToPythonError::new(
+                    "ブロックが閉じられていません",
+                    line,
+                    column,
+                ));
             }
             body.push(self.parse_stmt()?);
         }
@@ -699,7 +689,7 @@ impl<'a> Parser<'a> {
         Ok(body)
     }
 
-    fn parse_stmt(&mut self) -> Result<Stmt, FarmError> {
+    fn parse_stmt(&mut self) -> Result<Stmt, RustToPythonError> {
         self.match_visibility()?;
 
         if self.match_local_metadata_item()? {
@@ -766,7 +756,7 @@ impl<'a> Parser<'a> {
         self.parse_expr_or_assignment_stmt()
     }
 
-    fn parse_if_after_keyword(&mut self) -> Result<Stmt, FarmError> {
+    fn parse_if_after_keyword(&mut self) -> Result<Stmt, RustToPythonError> {
         let condition = self.collect_expr_until_symbol('{', "if 条件の後に `{` が必要です")?;
         self.require_expr(&condition, "if 条件が必要です")?;
         let then_body = self.parse_block()?;
@@ -778,7 +768,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_else_branch(&mut self) -> Result<Option<ElseBranch>, FarmError> {
+    fn parse_else_branch(&mut self) -> Result<Option<ElseBranch>, RustToPythonError> {
         if !self.match_keyword("else") {
             return Ok(None);
         }
@@ -799,7 +789,7 @@ impl<'a> Parser<'a> {
         Ok(Some(ElseBranch::Else(self.parse_block()?)))
     }
 
-    fn parse_for_after_keyword(&mut self) -> Result<Stmt, FarmError> {
+    fn parse_for_after_keyword(&mut self) -> Result<Stmt, RustToPythonError> {
         let variable = self.expect_ident("ループ変数が必要です")?;
         self.expect_keyword("in")?;
 
@@ -825,16 +815,24 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_let_after_keyword(&mut self) -> Result<Stmt, FarmError> {
+    fn parse_let_after_keyword(&mut self) -> Result<Stmt, RustToPythonError> {
         self.match_keyword("mut");
         let name = self.expect_ident("let の後に変数名が必要です")?;
+
+        if self.match_symbol(':') {
+            self.skip_let_type()?;
+        }
 
         if !self.match_operator("=") {
             let token = self.peek().or_else(|| self.tokens.last());
             let (line, column) = token
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
-            return Err(FarmError::new("let 文には `=` が必要です", line, column));
+            return Err(RustToPythonError::new(
+                "let 文には `=` が必要です",
+                line,
+                column,
+            ));
         }
 
         let value = self.collect_expr_until_semicolon("let 文の後に `;` が必要です")?;
@@ -842,7 +840,49 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Let { name, value })
     }
 
-    fn parse_expr_or_assignment_stmt(&mut self) -> Result<Stmt, FarmError> {
+    fn skip_let_type(&mut self) -> Result<(), RustToPythonError> {
+        let mut depth = ExprDepth::default();
+        let mut angle_depth = 0usize;
+
+        while !self.is_eof() {
+            let token = self.peek().expect("not eof");
+            match &token.kind {
+                TokenKind::Operator(value) if value == "<" => {
+                    angle_depth += 1;
+                    self.advance();
+                }
+                TokenKind::Operator(value) if value == ">" && angle_depth > 0 => {
+                    angle_depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Operator(value)
+                    if value == "=" && depth.is_top_level() && angle_depth == 0 =>
+                {
+                    return Ok(());
+                }
+                TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth.is_top_level() => {
+                    return Err(RustToPythonError::new(
+                        "let 文には `=` が必要です",
+                        token.line,
+                        token.column,
+                    ));
+                }
+                _ => {
+                    depth.observe(&token.kind);
+                    self.advance();
+                }
+            }
+        }
+
+        let (line, column) = self.end_position();
+        Err(RustToPythonError::new(
+            "let 文には `=` が必要です",
+            line,
+            column,
+        ))
+    }
+
+    fn parse_expr_or_assignment_stmt(&mut self) -> Result<Stmt, RustToPythonError> {
         let expr = self.collect_expr_until_semicolon("式文の後に `;` が必要です")?;
         self.require_expr(&expr, "式が必要です")?;
         let Some(index) = top_level_assignment_index(&expr) else {
@@ -854,13 +894,20 @@ impl<'a> Parser<'a> {
 
         if target.is_empty() || value.is_empty() {
             let token = self.previous();
-            return Err(FarmError::new("代入文が不正です", token.line, token.column));
+            return Err(RustToPythonError::new(
+                "代入文が不正です",
+                token.line,
+                token.column,
+            ));
         }
 
         Ok(Stmt::Assign { target, value })
     }
 
-    fn collect_expr_until_semicolon(&mut self, missing_message: &str) -> Result<Expr, FarmError> {
+    fn collect_expr_until_semicolon(
+        &mut self,
+        missing_message: &str,
+    ) -> Result<Expr, RustToPythonError> {
         let mut tokens = Vec::new();
         let mut depth = ExprDepth::default();
 
@@ -869,32 +916,40 @@ impl<'a> Parser<'a> {
             match &token.kind {
                 TokenKind::Symbol(';') if depth.is_top_level() => {
                     self.advance();
-                    return Ok(Expr::new(tokens));
+                    return finish_expr(tokens);
                 }
                 TokenKind::Symbol('}') if depth.is_top_level() => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
+                    return Err(RustToPythonError::new(
+                        missing_message,
+                        token.line,
+                        token.column,
+                    ));
                 }
                 TokenKind::Comment(_) => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
+                    return Err(RustToPythonError::new(
+                        missing_message,
+                        token.line,
+                        token.column,
+                    ));
                 }
                 _ => depth.observe(&token.kind),
             }
 
-            if let Some(expr_token) = token.expr_token() {
-                tokens.push(expr_token);
+            if token.expr_token().is_some() {
+                tokens.push(token);
             }
             self.advance();
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(missing_message, line, column))
+        Err(RustToPythonError::new(missing_message, line, column))
     }
 
     fn collect_expr_until_symbol(
         &mut self,
         symbol: char,
         missing_message: &str,
-    ) -> Result<Expr, FarmError> {
+    ) -> Result<Expr, RustToPythonError> {
         let mut tokens = Vec::new();
         let mut depth = ExprDepth::default();
 
@@ -902,28 +957,36 @@ impl<'a> Parser<'a> {
             let token = self.peek().expect("not eof").clone();
             match &token.kind {
                 TokenKind::Symbol(value) if *value == symbol && depth.is_top_level() => {
-                    return Ok(Expr::new(tokens));
+                    return finish_expr(tokens);
                 }
                 TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth.is_top_level() => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
+                    return Err(RustToPythonError::new(
+                        missing_message,
+                        token.line,
+                        token.column,
+                    ));
                 }
                 TokenKind::Comment(_) => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
+                    return Err(RustToPythonError::new(
+                        missing_message,
+                        token.line,
+                        token.column,
+                    ));
                 }
                 _ => depth.observe(&token.kind),
             }
 
-            if let Some(expr_token) = token.expr_token() {
-                tokens.push(expr_token);
+            if token.expr_token().is_some() {
+                tokens.push(token);
             }
             self.advance();
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(missing_message, line, column))
+        Err(RustToPythonError::new(missing_message, line, column))
     }
 
-    fn require_expr(&self, expr: &Expr, message: &str) -> Result<(), FarmError> {
+    fn require_expr(&self, expr: &Expr, message: &str) -> Result<(), RustToPythonError> {
         if !expr.is_empty() {
             return Ok(());
         }
@@ -932,14 +995,14 @@ impl<'a> Parser<'a> {
         let (line, column) = token
             .map(|t| (t.line, t.column))
             .unwrap_or_else(|| self.end_position());
-        Err(FarmError::new(message, line, column))
+        Err(RustToPythonError::new(message, line, column))
     }
 
-    fn reject_unsupported_starter(&self) -> Result<(), FarmError> {
+    fn reject_unsupported_starter(&self) -> Result<(), RustToPythonError> {
         Ok(())
     }
 
-    fn match_use_statement(&mut self) -> Result<bool, FarmError> {
+    fn match_use_statement(&mut self) -> Result<bool, RustToPythonError> {
         if !self.check_keyword("use") {
             return Ok(false);
         }
@@ -974,7 +1037,7 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Operator(glob)),
                 Some(TokenKind::Symbol(';')),
             ) if use_keyword == "use"
-                && crate_name == "farmrs"
+                && crate_name == "transplanter_rust"
                 && first_colons == "::"
                 && module_name == "prelude"
                 && second_colons == "::"
@@ -982,7 +1045,10 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn skip_statement_until_semicolon(&mut self, missing_message: &str) -> Result<(), FarmError> {
+    fn skip_statement_until_semicolon(
+        &mut self,
+        missing_message: &str,
+    ) -> Result<(), RustToPythonError> {
         let mut depth = ExprDepth::default();
 
         while !self.is_eof() {
@@ -993,7 +1059,11 @@ impl<'a> Parser<'a> {
                     return Ok(());
                 }
                 TokenKind::Symbol('}') if depth.is_top_level() => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
+                    return Err(RustToPythonError::new(
+                        missing_message,
+                        token.line,
+                        token.column,
+                    ));
                 }
                 _ => depth.observe(&token.kind),
             }
@@ -1001,10 +1071,10 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(missing_message, line, column))
+        Err(RustToPythonError::new(missing_message, line, column))
     }
 
-    fn match_visibility(&mut self) -> Result<bool, FarmError> {
+    fn match_visibility(&mut self) -> Result<bool, RustToPythonError> {
         if !self.match_keyword("pub") {
             return Ok(false);
         }
@@ -1016,7 +1086,7 @@ impl<'a> Parser<'a> {
         Ok(true)
     }
 
-    fn skip_type_until_field_separator(&mut self, close: char) -> Result<(), FarmError> {
+    fn skip_type_until_field_separator(&mut self, close: char) -> Result<(), RustToPythonError> {
         let mut depth = ExprDepth::default();
 
         while !self.is_eof() {
@@ -1027,7 +1097,7 @@ impl<'a> Parser<'a> {
                     return Ok(());
                 }
                 TokenKind::Comment(_) => {
-                    return Err(FarmError::new(
+                    return Err(RustToPythonError::new(
                         "型注釈が閉じられていません",
                         token.line,
                         token.column,
@@ -1039,10 +1109,14 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new("型注釈が閉じられていません", line, column))
+        Err(RustToPythonError::new(
+            "型注釈が閉じられていません",
+            line,
+            column,
+        ))
     }
 
-    fn skip_until_item_separator(&mut self, close: char) -> Result<(), FarmError> {
+    fn skip_until_item_separator(&mut self, close: char) -> Result<(), RustToPythonError> {
         let mut depth = ExprDepth::default();
 
         while !self.is_eof() {
@@ -1058,13 +1132,17 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new("項目が閉じられていません", line, column))
+        Err(RustToPythonError::new(
+            "項目が閉じられていません",
+            line,
+            column,
+        ))
     }
 
     fn collect_tokens_until_block(
         &mut self,
         missing_message: &str,
-    ) -> Result<Vec<TokenKind>, FarmError> {
+    ) -> Result<Vec<TokenKind>, RustToPythonError> {
         let mut tokens = Vec::new();
         let mut depth = ExprDepth::default();
 
@@ -1073,7 +1151,11 @@ impl<'a> Parser<'a> {
             match &token.kind {
                 TokenKind::Symbol('{') if depth.is_top_level() => return Ok(tokens),
                 TokenKind::Symbol(';') | TokenKind::Symbol('}') if depth.is_top_level() => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
+                    return Err(RustToPythonError::new(
+                        missing_message,
+                        token.line,
+                        token.column,
+                    ));
                 }
                 _ => depth.observe(&token.kind),
             }
@@ -1082,10 +1164,13 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(missing_message, line, column))
+        Err(RustToPythonError::new(missing_message, line, column))
     }
 
-    fn skip_item_header_and_block(&mut self, missing_message: &str) -> Result<(), FarmError> {
+    fn skip_item_header_and_block(
+        &mut self,
+        missing_message: &str,
+    ) -> Result<(), RustToPythonError> {
         let mut depth = ExprDepth::default();
 
         while !self.is_eof() {
@@ -1100,7 +1185,11 @@ impl<'a> Parser<'a> {
                     return Ok(());
                 }
                 TokenKind::Symbol('}') if depth.is_top_level() => {
-                    return Err(FarmError::new(missing_message, token.line, token.column));
+                    return Err(RustToPythonError::new(
+                        missing_message,
+                        token.line,
+                        token.column,
+                    ));
                 }
                 _ => depth.observe(&token.kind),
             }
@@ -1108,10 +1197,10 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(missing_message, line, column))
+        Err(RustToPythonError::new(missing_message, line, column))
     }
 
-    fn skip_macro_item(&mut self) -> Result<(), FarmError> {
+    fn skip_macro_item(&mut self) -> Result<(), RustToPythonError> {
         while !self.is_eof() {
             if matches!(
                 self.peek().map(|token| &token.kind),
@@ -1138,14 +1227,14 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(
+        Err(RustToPythonError::new(
             "macro 定義が閉じられていません",
             line,
             column,
         ))
     }
 
-    fn skip_balanced_symbol(&mut self, open: char, close: char) -> Result<(), FarmError> {
+    fn skip_balanced_symbol(&mut self, open: char, close: char) -> Result<(), RustToPythonError> {
         self.expect_symbol(open)?;
         let mut depth = 1usize;
 
@@ -1168,27 +1257,27 @@ impl<'a> Parser<'a> {
         }
 
         let (line, column) = self.end_position();
-        Err(FarmError::new(
+        Err(RustToPythonError::new(
             format!("`{close}` が必要です"),
             line,
             column,
         ))
     }
 
-    fn peek_ident(&self, message: &str) -> Result<String, FarmError> {
+    fn peek_ident(&self, message: &str) -> Result<String, RustToPythonError> {
         let Some(token) = self.peek() else {
             let (line, column) = self.end_position();
-            return Err(FarmError::new(message, line, column));
+            return Err(RustToPythonError::new(message, line, column));
         };
 
         if let TokenKind::Ident(value) = &token.kind {
             Ok(value.clone())
         } else {
-            Err(FarmError::new(message, token.line, token.column))
+            Err(RustToPythonError::new(message, token.line, token.column))
         }
     }
 
-    fn expect_keyword(&mut self, keyword: &str) -> Result<(), FarmError> {
+    fn expect_keyword(&mut self, keyword: &str) -> Result<(), RustToPythonError> {
         if self.match_keyword(keyword) {
             Ok(())
         } else {
@@ -1196,7 +1285,7 @@ impl<'a> Parser<'a> {
             let (line, column) = token
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
-            Err(FarmError::new(
+            Err(RustToPythonError::new(
                 format!("`{keyword}` が必要です"),
                 line,
                 column,
@@ -1204,10 +1293,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect_ident(&mut self, message: &str) -> Result<String, FarmError> {
+    fn expect_ident(&mut self, message: &str) -> Result<String, RustToPythonError> {
         let Some(token) = self.peek() else {
             let (line, column) = self.end_position();
-            return Err(FarmError::new(message, line, column));
+            return Err(RustToPythonError::new(message, line, column));
         };
 
         if let TokenKind::Ident(value) = &token.kind {
@@ -1215,11 +1304,11 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(value)
         } else {
-            Err(FarmError::new(message, token.line, token.column))
+            Err(RustToPythonError::new(message, token.line, token.column))
         }
     }
 
-    fn expect_symbol(&mut self, symbol: char) -> Result<(), FarmError> {
+    fn expect_symbol(&mut self, symbol: char) -> Result<(), RustToPythonError> {
         if self.match_symbol(symbol) {
             Ok(())
         } else {
@@ -1227,7 +1316,7 @@ impl<'a> Parser<'a> {
             let (line, column) = token
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
-            Err(FarmError::new(
+            Err(RustToPythonError::new(
                 format!("`{symbol}` が必要です"),
                 line,
                 column,
@@ -1235,7 +1324,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect_operator(&mut self, operator: &str) -> Result<(), FarmError> {
+    fn expect_operator(&mut self, operator: &str) -> Result<(), RustToPythonError> {
         if self.match_operator(operator) {
             Ok(())
         } else {
@@ -1243,7 +1332,7 @@ impl<'a> Parser<'a> {
             let (line, column) = token
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
-            Err(FarmError::new(
+            Err(RustToPythonError::new(
                 format!("`{operator}` が必要です"),
                 line,
                 column,
@@ -1251,7 +1340,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect_semicolon(&mut self, message: &str) -> Result<(), FarmError> {
+    fn expect_semicolon(&mut self, message: &str) -> Result<(), RustToPythonError> {
         if self.match_symbol(';') {
             Ok(())
         } else {
@@ -1259,7 +1348,7 @@ impl<'a> Parser<'a> {
             let (line, column) = token
                 .map(|t| (t.line, t.column))
                 .unwrap_or_else(|| self.end_position());
-            Err(FarmError::new(message, line, column))
+            Err(RustToPythonError::new(message, line, column))
         }
     }
 
@@ -1291,9 +1380,7 @@ impl<'a> Parser<'a> {
     }
 
     fn match_comment(&mut self) -> Option<String> {
-        let Some(token) = self.peek() else {
-            return None;
-        };
+        let token = self.peek()?;
 
         if let TokenKind::Comment(value) = &token.kind {
             let value = value.clone();
@@ -1373,6 +1460,16 @@ fn infer_impl_target(tokens: &[TokenKind]) -> Option<String> {
     })
 }
 
+fn finish_expr(tokens: Vec<Token>) -> Result<Expr, RustToPythonError> {
+    strict::validate_expr(&tokens)?;
+    Ok(Expr::new(
+        tokens
+            .into_iter()
+            .filter_map(|token| token.expr_token())
+            .collect(),
+    ))
+}
+
 fn split_top_level_range(expr: &Expr) -> Option<(Expr, Expr)> {
     let index = top_level_operator_index(expr, "..")?;
     Some((
@@ -1385,7 +1482,7 @@ fn top_level_operator_index(expr: &Expr, target: &str) -> Option<usize> {
     let mut depth = ExprDepth::default();
     for (index, token) in expr.tokens.iter().enumerate() {
         match token {
-            crate::ir::ExprToken::Operator(op) if op == target && depth.is_top_level() => {
+            super::ir::ExprToken::Operator(op) if op == target && depth.is_top_level() => {
                 return Some(index);
             }
             _ => depth.observe_expr(token),
@@ -1419,14 +1516,14 @@ impl ExprDepth {
         }
     }
 
-    fn observe_expr(&mut self, token: &crate::ir::ExprToken) {
+    fn observe_expr(&mut self, token: &super::ir::ExprToken) {
         match token {
-            crate::ir::ExprToken::Symbol('(') => self.paren += 1,
-            crate::ir::ExprToken::Symbol(')') => self.paren = self.paren.saturating_sub(1),
-            crate::ir::ExprToken::Symbol('[') => self.bracket += 1,
-            crate::ir::ExprToken::Symbol(']') => self.bracket = self.bracket.saturating_sub(1),
-            crate::ir::ExprToken::Symbol('{') => self.brace += 1,
-            crate::ir::ExprToken::Symbol('}') => self.brace = self.brace.saturating_sub(1),
+            super::ir::ExprToken::Symbol('(') => self.paren += 1,
+            super::ir::ExprToken::Symbol(')') => self.paren = self.paren.saturating_sub(1),
+            super::ir::ExprToken::Symbol('[') => self.bracket += 1,
+            super::ir::ExprToken::Symbol(']') => self.bracket = self.bracket.saturating_sub(1),
+            super::ir::ExprToken::Symbol('{') => self.brace += 1,
+            super::ir::ExprToken::Symbol('}') => self.brace = self.brace.saturating_sub(1),
             _ => {}
         }
     }

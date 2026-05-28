@@ -7,10 +7,10 @@ const EXPECTED_BASIC: &str =
 
 #[test]
 fn example_basic_prints_expected_output() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
-        .arg("examples/basic.farmrs")
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("examples/basic.rs")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -23,17 +23,17 @@ fn example_basic_prints_expected_output() {
 #[test]
 fn example_basic_writes_output_file() {
     let output_path = std::env::temp_dir().join(format!(
-        "farmrs_cli_output_{}_{}.py",
+        "transplanter_cli_output_{}_{}.py",
         std::process::id(),
         unique_suffix()
     ));
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
-        .arg("examples/basic.farmrs")
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("examples/basic.rs")
         .arg("-o")
         .arg(&output_path)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -47,10 +47,10 @@ fn example_basic_writes_output_file() {
 
 #[test]
 fn version_flag_prints_package_version() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--version")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -58,16 +58,16 @@ fn version_flag_prints_package_version() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let expected = format!("farmrs {}\n", env!("CARGO_PKG_VERSION"));
+    let expected = format!("transplanter {}\n", env!("CARGO_PKG_VERSION"));
     assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
 }
 
 #[test]
 fn short_version_flag_prints_package_version() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("-V")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -75,16 +75,16 @@ fn short_version_flag_prints_package_version() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let expected = format!("farmrs {}\n", env!("CARGO_PKG_VERSION"));
+    let expected = format!("transplanter {}\n", env!("CARGO_PKG_VERSION"));
     assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
 }
 
 #[test]
 fn help_flag_prints_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--help")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -95,30 +95,33 @@ fn help_flag_prints_usage() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Usage:"), "stdout: {stdout}");
     assert!(
-        stdout.contains("farmrs <input.rs|input.farmrs> --check"),
+        stdout.contains("transplanter <input.rs> --check"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("farmrs --init-ide [--src rs_src]"),
+        stdout.contains("transplanter --init-ide [--src rs_src]"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("farmrs --sync [--src rs_src] [--out py_src]"),
+        stdout.contains("transplanter --sync [--src rs_src] [--out py_src]"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("farmrs --watch [--src rs_src] [--out py_src]"),
+        stdout.contains("transplanter --watch [--src rs_src] [--out py_src]"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("farmrs --version"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("transplanter --version"),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]
 fn unknown_option_returns_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--unknown")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -130,11 +133,11 @@ fn unknown_option_returns_error() {
 
 #[test]
 fn missing_output_path_returns_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
-        .arg("examples/basic.farmrs")
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("examples/basic.rs")
         .arg("-o")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -146,11 +149,11 @@ fn missing_output_path_returns_error() {
 
 #[test]
 fn version_with_extra_unknown_option_returns_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--version")
         .arg("--unknown")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -162,11 +165,11 @@ fn version_with_extra_unknown_option_returns_error() {
 
 #[test]
 fn help_with_extra_unknown_option_returns_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--help")
         .arg("--unknown")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -178,11 +181,11 @@ fn help_with_extra_unknown_option_returns_error() {
 
 #[test]
 fn check_flag_accepts_valid_input() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
-        .arg("examples/basic.farmrs")
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("examples/basic.rs")
         .arg("--check")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -191,24 +194,24 @@ fn check_flag_accepts_valid_input() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "OK: examples/basic.farmrs\n"
+        "OK: examples/basic.rs\n"
     );
 }
 
 #[test]
 fn check_flag_reports_japanese_file_position() {
     let input_path = std::env::temp_dir().join(format!(
-        "farmrs_cli_invalid_{}_{}.farmrs",
+        "transplanter_cli_invalid_{}_{}.rs",
         std::process::id(),
         unique_suffix()
     ));
     fs::write(&input_path, "fn main() {\n    harvest()\n}\n").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg(&input_path)
         .arg("--check")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     let _ = fs::remove_file(&input_path);
 
@@ -226,23 +229,86 @@ fn check_flag_reports_japanese_file_position() {
 }
 
 #[test]
-fn check_flag_accepts_trait_declarations() {
+fn check_flag_rejects_python_output_syntax() {
     let input_path = std::env::temp_dir().join(format!(
-        "farmrs_cli_trait_{}_{}.farmrs",
+        "transplanter_cli_python_syntax_{}_{}.rs",
         std::process::id(),
         unique_suffix()
     ));
     fs::write(
         &input_path,
-        "trait Tool {}\n\nfn main() {\n    harvest();\n}\n",
+        "fn main() {\n    for i in range(4) {\n        move(North);\n    }\n}\n",
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg(&input_path)
         .arg("--check")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
+
+    let _ = fs::remove_file(&input_path);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(&input_path.to_string_lossy().to_string()),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("`range(...)` は入力では使えません"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn check_flag_rejects_rs_that_fails_cargo_check() {
+    let input_path = std::env::temp_dir().join(format!(
+        "transplanter_cli_rust_invalid_{}_{}.rs",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::write(
+        &input_path,
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n    missing_game_api();\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg(&input_path)
+        .arg("--check")
+        .output()
+        .expect("failed to run transplanter");
+
+    let _ = fs::remove_file(&input_path);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("`.rs` がRustとしてコンパイルできません"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("missing_game_api"), "stderr: {stderr}");
+}
+
+#[test]
+fn check_flag_accepts_trait_declarations() {
+    let input_path = std::env::temp_dir().join(format!(
+        "transplanter_cli_trait_{}_{}.rs",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::write(
+        &input_path,
+        "use transplanter_rust::prelude::*;\n\ntrait Tool {}\n\nfn main() {\n    harvest();\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg(&input_path)
+        .arg("--check")
+        .output()
+        .expect("failed to run transplanter");
 
     let _ = fs::remove_file(&input_path);
 
@@ -255,13 +321,13 @@ fn check_flag_accepts_trait_declarations() {
 
 #[test]
 fn check_flag_rejects_output_path() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
-        .arg("examples/basic.farmrs")
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("examples/basic.rs")
         .arg("--check")
         .arg("-o")
         .arg("output.py")
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -276,14 +342,14 @@ fn sync_uses_default_directories() {
     let workspace = temp_workspace("sync_default");
     write_file(
         &workspace.join("rs_src").join("main.rs"),
-        "fn main() {\n    harvest();\n}\n",
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -295,9 +361,9 @@ fn sync_uses_default_directories() {
         "harvest()\n"
     );
     assert!(
-        fs::read_to_string(workspace.join("rs_src").join("Cargo.toml"))
+        fs::read_to_string(workspace.join("Cargo.toml"))
             .unwrap()
-            .contains("path = \"main.rs\"")
+            .contains("path = \"rs_src/main.rs\"")
     );
     assert!(
         String::from_utf8(output.stdout)
@@ -314,14 +380,14 @@ fn init_ide_generates_manifest() {
     let workspace = temp_workspace("init_ide");
     write_file(
         &workspace.join("rs_src").join("main.rs"),
-        "use farmrs::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--init-ide")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -329,20 +395,19 @@ fn init_ide_generates_manifest() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let manifest = fs::read_to_string(workspace.join("rs_src").join("Cargo.toml")).unwrap();
+    let manifest = fs::read_to_string(workspace.join("Cargo.toml")).unwrap();
     assert!(manifest.contains("[dependencies]"), "{manifest}");
     assert!(
-        manifest.contains("farmrs = { path = \".farmrs_ide/farmrs\" }"),
+        manifest.contains("transplanter_rust = { path = \".transplanter_ide/transplanter_rust\" }"),
         "{manifest}"
     );
     assert!(manifest.contains("[[bin]]"), "{manifest}");
     assert!(manifest.contains("name = \"main\""), "{manifest}");
-    assert!(manifest.contains("path = \"main.rs\""), "{manifest}");
+    assert!(manifest.contains("path = \"rs_src/main.rs\""), "{manifest}");
     assert!(
         workspace
-            .join("rs_src")
-            .join(".farmrs_ide")
-            .join("farmrs")
+            .join(".transplanter_ide")
+            .join("transplanter_rust")
             .join("src")
             .join("prelude.rs")
             .is_file()
@@ -356,7 +421,7 @@ fn init_ide_manifest_passes_cargo_check() {
     let workspace = temp_workspace("init_ide_cargo_check");
     write_file(
         &workspace.join("rs_src").join("main.rs"),
-        r#"use farmrs::prelude::*;
+        r#"use transplanter_rust::prelude::*;
 
 fn ready(entity: Entity) -> bool {
     if entity == Entity::Carrot {
@@ -366,7 +431,7 @@ fn ready(entity: Entity) -> bool {
 }
 
 fn main() {
-    /* block comments are fine for rust-analyzer and farmrs */
+    /* block comments are fine for rust-analyzer and Transplanter */
     let mut xs = [1, 2, 3];
     xs[0] = xs[1];
     for item in xs {
@@ -387,11 +452,11 @@ fn main() {
 "#,
     );
 
-    let init_output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let init_output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--init-ide")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
     assert!(
         init_output.status.success(),
         "stderr: {}",
@@ -401,7 +466,7 @@ fn main() {
     let check_output = Command::new("cargo")
         .arg("check")
         .arg("--manifest-path")
-        .arg(workspace.join("rs_src").join("Cargo.toml"))
+        .arg(workspace.join("Cargo.toml"))
         .output()
         .expect("failed to run cargo check");
 
@@ -420,10 +485,10 @@ fn sync_accepts_custom_directories() {
     let workspace = temp_workspace("sync_custom");
     write_file(
         &workspace.join("custom_rs").join("main.rs"),
-        "fn main() {\n    move_dir(Direction::East);\n}\n",
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    move_dir(Direction::East);\n}\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
         .arg("--src")
         .arg("custom_rs")
@@ -431,7 +496,7 @@ fn sync_accepts_custom_directories() {
         .arg("custom_py")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -451,14 +516,14 @@ fn sync_keeps_subdirectory_layout() {
     let workspace = temp_workspace("sync_subdir");
     write_file(
         &workspace.join("rs_src").join("crops").join("carrot.rs"),
-        "fn main() {\n    plant(Entity::Carrot);\n}\n",
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    plant(Entity::Carrot);\n}\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(
         output.status.success(),
@@ -481,11 +546,11 @@ fn sync_reports_japanese_file_position_for_invalid_source() {
         "fn main() {\n    harvest()\n}\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -500,39 +565,65 @@ fn sync_reports_japanese_file_position_for_invalid_source() {
 }
 
 #[test]
-fn sync_still_accepts_farmrs_extension() {
-    let workspace = temp_workspace("sync_farmrs_extension");
+fn sync_rejects_rs_that_fails_cargo_check_without_writing_output() {
+    let workspace = temp_workspace("sync_rust_invalid");
     write_file(
-        &workspace.join("rs_src").join("legacy.farmrs"),
-        "fn main() {\n    can_harvest();\n}\n",
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n    missing_game_api();\n}\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("`.rs` がRustとしてコンパイルできません"),
+        "stderr: {stderr}"
     );
-    assert_eq!(
-        fs::read_to_string(workspace.join("py_src").join("legacy.py")).unwrap(),
-        "can_harvest()\n"
+    assert!(stderr.contains("missing_game_api"), "stderr: {stderr}");
+    assert!(
+        !workspace.join("py_src").join("main.py").exists(),
+        "invalid Rust should not produce py output"
     );
 
     let _ = fs::remove_dir_all(workspace);
 }
 
 #[test]
-fn sync_rejects_input_file_mix() {
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+fn sync_ignores_non_rs_extension() {
+    let workspace = temp_workspace("sync_non_rs_extension");
+    write_file(
+        &workspace.join("rs_src").join("notes.txt"),
+        "fn main() {\n    can_harvest();\n}\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
-        .arg("examples/basic.farmrs")
+        .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!workspace.join("py_src").join("notes.py").exists());
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn sync_rejects_input_file_mix() {
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .arg("examples/basic.rs")
+        .output()
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -546,11 +637,11 @@ fn sync_rejects_input_file_mix() {
 fn sync_reports_missing_source_directory() {
     let workspace = temp_workspace("sync_missing_src");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_farmrs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
         .current_dir(&workspace)
         .output()
-        .expect("failed to run farmrs");
+        .expect("failed to run transplanter");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -571,7 +662,7 @@ fn unique_suffix() -> u128 {
 
 fn temp_workspace(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "farmrs_cli_{name}_{}_{}",
+        "transplanter_cli_{name}_{}_{}",
         std::process::id(),
         unique_suffix()
     ));

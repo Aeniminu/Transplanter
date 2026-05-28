@@ -1,3 +1,5 @@
+use transplanter_rust::prelude::*;
+
 fn tend_tile() {
     if can_harvest() {
         harvest();

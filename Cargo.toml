@@ -1,7 +1,8 @@
 [package]
-name = "farmrs"
+name = "transplanter"
 version = "0.1.0"
 edition = "2024"
+autoexamples = false
 
 [dependencies]
 
