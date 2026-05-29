@@ -18,6 +18,15 @@ use crate::project::{
     sync_project,
 };
 use crate::updater::{self, ReleaseInfo};
+use windows::Win32::Foundation::HWND as WinHwnd;
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree as WinCoTaskMemFree, IBindCtx,
+};
+use windows::Win32::UI::Shell::{
+    FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
+    IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+};
+use windows::core::PCWSTR;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateRoundRectRgn,
@@ -27,16 +36,10 @@ use windows_sys::Win32::Graphics::Gdi::{
     ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetPixel, SetTextColor, SetWindowRgn,
     TRANSPARENT, UpdateWindow,
 };
-use windows_sys::Win32::System::Com::{
-    COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
-};
+use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Console::FreeConsole;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
-use windows_sys::Win32::UI::Shell::{
-    BIF_EDITBOX, BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, SHBrowseForFolderW,
-    SHGetPathFromIDListW,
-};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     ES_AUTOHSCROLL, GWLP_USERDATA, GetCursorPos, GetDlgCtrlID, GetMessageW, GetWindowLongPtrW,
@@ -1500,7 +1503,17 @@ unsafe fn draw_mask_icon(hdc: HDC, bounds: &RECT, icon: &[&str], scale: i32, bru
 }
 
 unsafe fn browse_and_set_path(hwnd: HWND, edit_id: i32, is_src: bool) {
-    let Some(path) = choose_folder(hwnd) else {
+    let initial_folder = state_from_hwnd(hwnd)
+        .map(|state| {
+            if is_src {
+                state.config.src_dir.clone()
+            } else {
+                state.config.out_dir.clone()
+            }
+        })
+        .filter(|path| Path::new(path).is_dir());
+
+    let Some(path) = choose_folder(hwnd, initial_folder.as_deref()) else {
         return;
     };
     set_control_text(hwnd, edit_id, &path);
@@ -1527,33 +1540,48 @@ unsafe fn cycle_language_mode(hwnd: HWND) {
     save_config_and_start(hwnd);
 }
 
-unsafe fn choose_folder(hwnd: HWND) -> Option<String> {
-    let mut display_name = vec![0u16; 260];
+unsafe fn choose_folder(hwnd: HWND, initial_folder: Option<&str>) -> Option<String> {
+    let dialog: IFileOpenDialog =
+        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+
+    let options =
+        dialog.GetOptions().ok()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
+    dialog.SetOptions(options).ok()?;
+
     let title = wide("フォルダを選択してください");
-    let browse = BROWSEINFOW {
-        hwndOwner: hwnd,
-        pidlRoot: null_mut(),
-        pszDisplayName: display_name.as_mut_ptr(),
-        lpszTitle: title.as_ptr(),
-        ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX,
-        lpfn: None,
-        lParam: 0,
-        iImage: 0,
+    let _ = dialog.SetTitle(PCWSTR(title.as_ptr()));
+
+    if let Some(initial_folder) = initial_folder
+        && let Some(folder) = shell_item_from_path(initial_folder)
+    {
+        let _ = dialog.SetFolder(&folder);
+    }
+
+    let owner = if hwnd.is_null() {
+        None
+    } else {
+        Some(WinHwnd(hwnd))
     };
+    dialog.Show(owner).ok()?;
 
-    let pidl = SHBrowseForFolderW(&browse);
-    if pidl.is_null() {
+    let item = dialog.GetResult().ok()?;
+    shell_item_path(&item)
+}
+
+unsafe fn shell_item_from_path(path: &str) -> Option<IShellItem> {
+    if !Path::new(path).is_dir() {
         return None;
     }
 
-    let mut path_buf = vec![0u16; 32768];
-    let ok = SHGetPathFromIDListW(pidl, path_buf.as_mut_ptr()) != 0;
-    CoTaskMemFree(pidl.cast::<c_void>());
-    if !ok {
-        return None;
-    }
+    let path = wide(path);
+    SHCreateItemFromParsingName(PCWSTR(path.as_ptr()), None::<&IBindCtx>).ok()
+}
 
-    Some(string_from_wide_buffer(&path_buf))
+unsafe fn shell_item_path(item: &IShellItem) -> Option<String> {
+    let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    let result = path.to_string().ok();
+    WinCoTaskMemFree(Some(path.0 as *const c_void));
+    result
 }
 
 unsafe fn start_update_check(hwnd: HWND) {
@@ -2302,14 +2330,6 @@ fn parse_toml_string(value: &str) -> Result<String, String> {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-fn string_from_wide_buffer(buffer: &[u16]) -> String {
-    let len = buffer
-        .iter()
-        .position(|ch| *ch == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf16_lossy(&buffer[..len])
 }
 
 fn with_theme<R>(f: impl FnOnce(&Theme) -> R) -> R {

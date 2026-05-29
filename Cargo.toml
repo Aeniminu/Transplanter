@@ -1,6 +1,6 @@
 [package]
 name = "transplanter"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 autoexamples = false
 
@@ -13,6 +13,11 @@ transplanter_lisp = { path = "converters/lisp_to_python" }
 transplanter_rust = { path = "converters/rust_to_python" }
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
