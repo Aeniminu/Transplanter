@@ -3,6 +3,10 @@ use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{self, Command};
+use std::ptr::null_mut;
+
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const RELEASE_API_URL: &str = "https://api.github.com/repos/Aeniminu/Transplanter/releases/latest";
@@ -47,13 +51,15 @@ pub fn launch_update_script(release: &ReleaseInfo) -> Result<(), String> {
         )
     })?;
 
-    powershell_file(&script_path)
-        .arg(process::id().to_string())
-        .arg(&exe_path)
-        .arg(&new_path)
-        .arg(&release.asset_url)
-        .spawn()
-        .map_err(|err| format!("エラー: 更新用スクリプトを起動できません: {err}"))?;
+    launch_powershell_file(
+        &script_path,
+        &[
+            process::id().to_string(),
+            exe_path.display().to_string(),
+            new_path.display().to_string(),
+            release.asset_url.clone(),
+        ],
+    )?;
 
     Ok(())
 }
@@ -216,16 +222,77 @@ fn powershell_command(script: &str) -> Command {
     command
 }
 
-fn powershell_file(script_path: &Path) -> Command {
-    let mut command = Command::new("powershell.exe");
-    command
-        .arg("-NoProfile")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-File")
-        .arg(script_path)
-        .creation_flags(CREATE_NO_WINDOW);
-    command
+fn launch_powershell_file(script_path: &Path, args: &[String]) -> Result<(), String> {
+    let operation = wide("open");
+    let executable = wide("powershell.exe");
+    let parameters = wide(&powershell_file_parameters(script_path, args));
+    let directory = script_path
+        .parent()
+        .and_then(Path::to_str)
+        .map(wide)
+        .unwrap_or_else(|| wide(""));
+
+    let result = unsafe {
+        ShellExecuteW(
+            null_mut(),
+            operation.as_ptr(),
+            executable.as_ptr(),
+            parameters.as_ptr(),
+            directory.as_ptr(),
+            SW_HIDE,
+        )
+    } as isize;
+
+    if result <= 32 {
+        return Err(format!(
+            "エラー: 更新用スクリプトを起動できません: ShellExecuteW エラーコード {result}"
+        ));
+    }
+
+    Ok(())
+}
+
+fn powershell_file_parameters(script_path: &Path, args: &[String]) -> String {
+    let mut parameters = vec![
+        "-NoProfile".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-WindowStyle".to_string(),
+        "Hidden".to_string(),
+        "-File".to_string(),
+        quote_windows_arg(&script_path.display().to_string()),
+    ];
+    parameters.extend(args.iter().map(|arg| quote_windows_arg(arg)));
+    parameters.join(" ")
+}
+
+fn quote_windows_arg(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0usize;
+
+    for ch in value.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                quoted.push(ch);
+                backslashes = 0;
+            }
+        }
+    }
+
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    quoted
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn command_details(output: &std::process::Output) -> String {
@@ -321,5 +388,34 @@ mod tests {
         assert!(script.contains("Invoke-WebRequest -Uri $AssetUrl"));
         assert!(script.contains("Rename-Item -LiteralPath $TargetPath"));
         assert!(script.contains("Start-Process -FilePath $TargetPath"));
+    }
+
+    #[test]
+    fn powershell_file_parameters_quote_update_arguments() {
+        let parameters = powershell_file_parameters(
+            Path::new(r"C:\Users\Player\Transplanter App\Transplanter-update.ps1"),
+            &[
+                "1234".to_string(),
+                r"C:\Users\Player\Transplanter App\Transplanter.exe".to_string(),
+                r"C:\Users\Player\Transplanter App\Transplanter.exe.new".to_string(),
+                "https://example.test/Transplanter.exe".to_string(),
+            ],
+        );
+
+        assert!(parameters.contains("-WindowStyle Hidden"));
+        assert!(
+            parameters
+                .contains(r#"-File "C:\Users\Player\Transplanter App\Transplanter-update.ps1""#)
+        );
+        assert!(parameters.contains(r#""C:\Users\Player\Transplanter App\Transplanter.exe""#));
+        assert!(parameters.contains(r#""https://example.test/Transplanter.exe""#));
+    }
+
+    #[test]
+    fn quote_windows_arg_escapes_quotes_and_trailing_backslashes() {
+        assert_eq!(
+            quote_windows_arg(r#"C:\Path With "Quote"\tail\"#),
+            r#""C:\Path With \"Quote\"\tail\\""#
+        );
     }
 }
