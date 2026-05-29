@@ -713,6 +713,75 @@ fn sync_accepts_mixed_rust_and_lisp_sources() {
 }
 
 #[test]
+fn sync_rust_language_ignores_lisp_sources() {
+    let workspace = temp_workspace("sync_rust_language");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
+    );
+    write_file(
+        &workspace.join("rs_src").join("main.scm"),
+        "(not valid lisp",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .arg("--language")
+        .arg("rust")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("main.py")).unwrap(),
+        "harvest()\n"
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn sync_lisp_language_ignores_rust_sources() {
+    let workspace = temp_workspace("sync_lisp_language");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    missing_game_api();\n}\n",
+    );
+    write_file(
+        &workspace.join("rs_src").join("main.scm"),
+        "(use transplanter)\n\n(define (main)\n  (harvest))\n",
+    );
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_transplanter"));
+    let fake_checker = add_fake_scheme_checker(&mut command);
+    let output = command
+        .arg("--sync")
+        .arg("--language")
+        .arg("lisp")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("main.py")).unwrap(),
+        "harvest()\n"
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+    let _ = fs::remove_dir_all(fake_checker);
+}
+
+#[test]
 fn sync_rejects_duplicate_output_paths_across_languages() {
     let workspace = temp_workspace("sync_duplicate_outputs");
     write_file(
@@ -726,6 +795,36 @@ fn sync_rejects_duplicate_output_paths_across_languages() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
         .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("main.rs"), "stderr: {stderr}");
+    assert!(stderr.contains("main.scm"), "stderr: {stderr}");
+    assert!(stderr.contains("main.py"), "stderr: {stderr}");
+    assert!(stderr.contains("出力先"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn sync_auto_language_rejects_duplicate_output_paths() {
+    let workspace = temp_workspace("sync_auto_duplicate_outputs");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
+    );
+    write_file(
+        &workspace.join("rs_src").join("main.scm"),
+        "(define (main)\n  (quick-print \"lisp\"))\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .arg("--language")
+        .arg("auto")
         .current_dir(&workspace)
         .output()
         .expect("failed to run transplanter");
@@ -967,6 +1066,40 @@ fn sync_rejects_input_file_mix() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
         stderr.contains("エラー: --sync/--watch と入力ファイルは同時に使えません"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn sync_rejects_unknown_language_mode() {
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .arg("--language")
+        .arg("ruby")
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("--language"), "stderr: {stderr}");
+    assert!(stderr.contains("auto"), "stderr: {stderr}");
+    assert!(stderr.contains("rust"), "stderr: {stderr}");
+    assert!(stderr.contains("lisp"), "stderr: {stderr}");
+}
+
+#[test]
+fn single_file_mode_rejects_language_mode() {
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg(BASIC_EXAMPLE)
+        .arg("--language")
+        .arg("rust")
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("単体ファイル変換では --language は使いません"),
         "stderr: {stderr}"
     );
 }

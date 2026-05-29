@@ -4,13 +4,14 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use crate::ide_support::write_manifest;
+use crate::ide_support::write_manifest_for_files;
+use crate::language::LanguageMode;
 use crate::lisp_check::validate_lisp_file;
 use crate::paths::{
     display_path, ensure_source_dir, format_compile_error, is_lisp_file, is_rs_file,
-    is_source_file, should_skip_source_dir,
+    should_skip_source_dir,
 };
-use crate::rust_check::validate_project;
+use crate::rust_check::validate_project_files;
 use crate::rust_modules::discover_module_files;
 
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
@@ -21,7 +22,11 @@ pub struct FileStamp {
     len: u64,
 }
 
-pub fn sync_project(src_dir: &Path, out_dir: &Path) -> Result<usize, String> {
+pub fn sync_project(
+    src_dir: &Path,
+    out_dir: &Path,
+    language: LanguageMode,
+) -> Result<usize, String> {
     ensure_source_dir(src_dir)?;
     fs::create_dir_all(out_dir).map_err(|err| {
         format!(
@@ -30,14 +35,14 @@ pub fn sync_project(src_dir: &Path, out_dir: &Path) -> Result<usize, String> {
         )
     })?;
 
-    let files = find_source_files(src_dir)?;
+    let files = find_source_files(src_dir, language)?;
     ensure_unique_output_paths(src_dir, out_dir, &files)?;
     let rs_files = rust_source_files(&files);
     let module_files = discover_module_files(&rs_files)?;
     for input_path in &files {
         check_project_file(input_path, module_files.contains(input_path))?;
     }
-    validate_project(src_dir)?;
+    validate_project_files(src_dir, &rs_files)?;
     for input_path in &files {
         compile_project_file_unchecked(
             src_dir,
@@ -50,8 +55,8 @@ pub fn sync_project(src_dir: &Path, out_dir: &Path) -> Result<usize, String> {
     Ok(files.len())
 }
 
-pub fn watch_project(src_dir: &Path, out_dir: &Path) -> Result<(), String> {
-    let count = sync_project(src_dir, out_dir)?;
+pub fn watch_project(src_dir: &Path, out_dir: &Path, language: LanguageMode) -> Result<(), String> {
+    let count = sync_project(src_dir, out_dir, language)?;
     println!(
         "OK: {} 件を {} から {} へ変換しました",
         count,
@@ -60,22 +65,22 @@ pub fn watch_project(src_dir: &Path, out_dir: &Path) -> Result<(), String> {
     );
     println!("watch: ソースファイルの変更を監視しています。終了するには Ctrl+C を押してください。");
 
-    let mut seen = snapshot_source_files(src_dir)?;
+    let mut seen = snapshot_source_files(src_dir, language)?;
     let mut seen_outputs = snapshot_output_files(src_dir, out_dir, seen.keys())?;
     loop {
         thread::sleep(WATCH_INTERVAL);
-        let current = snapshot_source_files(src_dir)?;
+        let current = snapshot_source_files(src_dir, language)?;
         let current_outputs = snapshot_output_files(src_dir, out_dir, current.keys())?;
 
         if current.keys().ne(seen.keys()) {
-            write_manifest(src_dir)?;
+            write_manifest_for_language(src_dir, language, current.keys())?;
         }
 
         let source_changed = current
             .iter()
             .any(|(input_path, stamp)| seen.get(input_path) != Some(stamp));
         if current.keys().ne(seen.keys()) || source_changed {
-            let count = sync_project(src_dir, out_dir)?;
+            let count = sync_project(src_dir, out_dir, language)?;
             println!("OK: {count} 件を再同期しました");
             seen = current;
             seen_outputs = snapshot_output_files(src_dir, out_dir, seen.keys())?;
@@ -87,7 +92,7 @@ pub fn watch_project(src_dir: &Path, out_dir: &Path) -> Result<(), String> {
             let output_changed =
                 seen_outputs.get(&output_path) != current_outputs.get(&output_path);
             if output_changed {
-                let output_path = compile_project_file(src_dir, out_dir, input_path)?;
+                let output_path = compile_project_file(src_dir, out_dir, input_path, language)?;
                 println!("OK: {} を変換しました", display_path(&output_path));
             }
         }
@@ -101,15 +106,24 @@ pub fn compile_project_file(
     src_dir: &Path,
     out_dir: &Path,
     input_path: &Path,
+    language: LanguageMode,
 ) -> Result<PathBuf, String> {
-    let files = find_source_files(src_dir)?;
+    if !language.accepts_path(input_path) {
+        return Err(format!(
+            "エラー: `{}` は {} mode の対象ファイルではありません",
+            display_path(input_path),
+            language.as_str()
+        ));
+    }
+
+    let files = find_source_files(src_dir, language)?;
     ensure_unique_output_paths(src_dir, out_dir, &files)?;
     let rs_files = rust_source_files(&files);
     let module_files = discover_module_files(&rs_files)?;
     let output = compile_project_source(input_path, module_files.contains(input_path))?;
 
     if is_rs_file(input_path) {
-        validate_project(src_dir)?;
+        validate_project_files(src_dir, &rs_files)?;
     }
     if is_lisp_file(input_path) {
         validate_lisp_file(input_path)?;
@@ -135,11 +149,14 @@ pub fn output_path_for(
     Ok(output_path)
 }
 
-pub fn snapshot_source_files(src_dir: &Path) -> Result<BTreeMap<PathBuf, FileStamp>, String> {
+pub fn snapshot_source_files(
+    src_dir: &Path,
+    language: LanguageMode,
+) -> Result<BTreeMap<PathBuf, FileStamp>, String> {
     ensure_source_dir(src_dir)?;
     let mut snapshot = BTreeMap::new();
 
-    for file in find_source_files(src_dir)? {
+    for file in find_source_files(src_dir, language)? {
         snapshot.insert(file.clone(), file_stamp(&file)?);
     }
 
@@ -276,15 +293,19 @@ fn file_stamp(path: &Path) -> Result<FileStamp, String> {
     })
 }
 
-fn find_source_files(src_dir: &Path) -> Result<Vec<PathBuf>, String> {
+fn find_source_files(src_dir: &Path, language: LanguageMode) -> Result<Vec<PathBuf>, String> {
     ensure_source_dir(src_dir)?;
     let mut files = Vec::new();
-    collect_source_files(src_dir, &mut files)?;
+    collect_source_files(src_dir, language, &mut files)?;
     files.sort();
     Ok(files)
 }
 
-fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_source_files(
+    dir: &Path,
+    language: LanguageMode,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     for entry in fs::read_dir(dir)
         .map_err(|err| format!("エラー: `{}` を読み込めません: {err}", display_path(dir)))?
     {
@@ -296,8 +317,8 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Stri
             .map_err(|err| format!("エラー: `{}` を確認できません: {err}", display_path(&path)))?;
 
         if metadata.is_dir() && !should_skip_source_dir(&path) {
-            collect_source_files(&path, files)?;
-        } else if metadata.is_file() && is_source_file(&path) {
+            collect_source_files(&path, language, files)?;
+        } else if metadata.is_file() && language.accepts_path(&path) {
             files.push(path);
         }
     }
@@ -311,4 +332,20 @@ fn rust_source_files(files: &[PathBuf]) -> Vec<PathBuf> {
         .filter(|path| is_rs_file(path))
         .cloned()
         .collect()
+}
+
+fn write_manifest_for_language<'a>(
+    src_dir: &Path,
+    language: LanguageMode,
+    input_paths: impl Iterator<Item = &'a PathBuf>,
+) -> Result<(), String> {
+    if !language.includes_rust() {
+        return Ok(());
+    }
+
+    let rs_files = input_paths
+        .filter(|path| is_rs_file(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    write_manifest_for_files(src_dir, &rs_files).map(|_| ())
 }

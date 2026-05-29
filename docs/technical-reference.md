@@ -4,20 +4,23 @@
 
 ## transplanter.toml の役割
 
-`transplanter.toml` はTransplanterの設定メモです。GUIで選んだ2つのパスが保存されています。
+`transplanter.toml` はTransplanterの設定メモです。GUIで選んだパスと言語モードが保存されています。
 
 ```toml
 src_dir = "C:\\Users\\YourName\\Desktop\\farming\\rs_src"
 out_dir = "C:\\Users\\YourName\\AppData\\LocalLow\\TheFarmerWasReplaced\\TheFarmerWasReplaced\\Saves\\Save0"
+language = "rust"
 ```
 
 ゲームでいうと「このセーブではこの畑とこの納品先を使う」という保存データに近いです。Cargo の `Cargo.toml` はRustプロジェクトの設計図、`transplanter.toml` は変換器の行き先メモ、と分けて考えると分かりやすいです。
+
+`language` は `rust` / `lisp` / `auto` のどれかです。新規GUIワークスペースは `rust` から始まります。古い設定ファイルに `language` がない場合は、互換性のため `auto` として読みます。
 
 ## IDE 補助
 
 `rs_src/*.rs` はRustファイルなので、Cursorやrust-analyzerの補完を使えます。ただし `harvest()` や `Entity::Carrot` はゲーム独自APIなので、そのままだとRust側では未定義になります。
 
-そのため、Transplanter は作業フォルダ直下に `Cargo.toml` と `.transplanter_ide/transplanter_rust/` を自動生成します。`rs_src` の中にはユーザーが読む・書く `.rs` / `.scm` / `.lisp` だけを置く方針です。
+そのため、Transplanter は作業フォルダ直下に `Cargo.toml` と `.transplanter_ide/transplanter_rust/` を自動生成します。`rs_src` の中にはユーザーが読む・書く `.rs` / `.scm` / `.lisp` だけを置く方針です。実際に変換する対象は言語モードで絞られます。
 
 Rustとして確認する場合は、PowerShellで `Transplanter.exe` のある作業フォルダから次を実行します。
 
@@ -40,12 +43,16 @@ Rust は関数オーバーロードができないため、複数引数のゲー
 ```powershell
 .\Transplanter.exe --help
 .\Transplanter.exe --sync --src rs_src --out "ゲームのSaveフォルダ"
+.\Transplanter.exe --sync --src rs_src --out "ゲームのSaveフォルダ" --language rust
+.\Transplanter.exe --sync --src rs_src --out "ゲームのSaveフォルダ" --language lisp
 .\Transplanter.exe --watch --src rs_src --out "ゲームのSaveフォルダ"
 .\Transplanter.exe rs_src\main.rs --check
 .\Transplanter.exe rs_src\main.scm --check
 ```
 
-`--out` を省略すると、既定では `py_src` に出力します。実プレイでは基本的にSaveフォルダを指定してください。削除されたソースに対応する `.py` は自動削除しません。ゲーム側で使っているファイルを誤って消さないため、不要な `.py` は手動で整理してください。
+`--language` は `--sync` / `--watch` で使います。`rust` は `.rs` だけ、`lisp` は `.scm` / `.lisp` だけ、`auto` は現在のフォルダ内の対応拡張子を自動判定します。単体ファイル変換は入力パスが明示されているため、今まで通り拡張子で判定します。
+
+`--out` を省略すると、既定では `py_src` に出力します。実プレイでは基本的にSaveフォルダを指定してください。削除されたソースや、選択中の言語モードから外れたソースに対応する `.py` は自動削除しません。ゲーム側で使っているファイルを誤って消さないため、不要な `.py` は手動で整理してください。
 
 ## Rust 入力の書き方
 
@@ -247,7 +254,7 @@ pub fn main() {
 | ゲーム内の unlock 状態・所持数・実行結果 | ゲーム内で確定 | 変換器は静的なコード生成だけを行う |
 | ゲーム API の実際の挙動 | ゲーム内で実行 | `transplanter_rust::prelude` は Rust IDE 補完用の空実装 |
 
-Rust の所有権・借用・ライフタイムの意味論はゲーム側には再現されません。ただし、`.rs` は `cargo check` を通すので、Rustとして壊れた書き方は `.py` になる前に止まります。`.scm` / `.lisp` は Transplanter の Lisp パーサーと外部Scheme処理系で確認します。
+Rust の所有権・借用・ライフタイムの意味論はゲーム側には再現されません。ただし、選択中の言語モードで対象になる `.rs` は `cargo check` を通すので、Rustとして壊れた書き方は `.py` になる前に止まります。対象になる `.scm` / `.lisp` は Transplanter の Lisp パーサーと外部Scheme処理系で確認します。
 
 ## ソースからビルドする場合
 
@@ -266,6 +273,8 @@ cargo build --release
 .\target\release\transplanter.exe converters\lisp_to_python\examples\basic.scm
 .\target\release\transplanter.exe converters\lisp_to_python\examples\basic.scm --check
 .\target\release\transplanter.exe --sync
+.\target\release\transplanter.exe --sync --language rust
+.\target\release\transplanter.exe --sync --language lisp
 .\target\release\transplanter.exe --init-ide
 ```
 

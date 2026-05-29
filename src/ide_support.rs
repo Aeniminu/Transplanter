@@ -3,18 +3,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::paths::{
-    IDE_SUPPORT_CRATE_DIR, display_path, ensure_source_dir, project_dir_for_src_dir,
+    IDE_SUPPORT_CRATE_DIR, display_path, ensure_source_dir, is_rs_file, project_dir_for_src_dir,
     relative_path_for_manifest, should_skip_source_dir, toml_string,
 };
 use crate::rust_modules::discover_module_files;
 
 pub fn write_manifest(src_dir: &Path) -> Result<PathBuf, String> {
+    let rs_files = find_rs_files(src_dir)?;
+    write_manifest_for_files(src_dir, &rs_files)
+}
+
+pub fn write_manifest_for_files(src_dir: &Path, rs_files: &[PathBuf]) -> Result<PathBuf, String> {
     let project_dir = project_dir_for_src_dir(src_dir);
     let manifest_path = project_dir.join("Cargo.toml");
     write_support_crate(&project_dir)?;
-    let rs_files = find_rs_files(src_dir)?;
-    let module_files = discover_module_files(&rs_files)?;
-    let manifest = render_manifest(&project_dir, src_dir, &rs_files, &module_files)?;
+    let module_files = discover_module_files(rs_files)?;
+    let manifest = render_manifest(&project_dir, src_dir, rs_files, &module_files)?;
     fs::write(&manifest_path, manifest).map_err(|err| {
         format!(
             "エラー: `{}` に書き込めません: {err}",
@@ -86,7 +90,7 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> 
 
         if metadata.is_dir() && !should_skip_source_dir(&path) {
             collect_rs_files(&path, files)?;
-        } else if metadata.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+        } else if metadata.is_file() && is_rs_file(&path) {
             files.push(path);
         }
     }

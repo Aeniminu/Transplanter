@@ -4,18 +4,18 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ide_support::{find_rs_files, write_manifest, write_support_crate};
+use crate::ide_support::{write_manifest_for_files, write_support_crate};
 use crate::paths::{
     IDE_SUPPORT_CRATE_DIR, absolute_manifest_path, display_path, is_rs_file, manifest_path_string,
     toml_string,
 };
 
-pub fn validate_project(src_dir: &Path) -> Result<(), String> {
-    if find_rs_files(src_dir)?.is_empty() {
+pub fn validate_project_files(src_dir: &Path, rs_files: &[PathBuf]) -> Result<(), String> {
+    if rs_files.is_empty() {
         return Ok(());
     }
 
-    let manifest_path = write_manifest(src_dir)?;
+    let manifest_path = write_manifest_for_files(src_dir, rs_files)?;
     run_cargo_check(&manifest_path)
 }
 

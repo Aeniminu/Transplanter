@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::ide_support::write_manifest;
+use crate::language::LanguageMode;
 use crate::lisp_check::validate_lisp_file;
 use crate::paths::{
     DEFAULT_OUT_DIR, DEFAULT_SRC_DIR, display_path, format_compile_error, is_lisp_file, is_rs_file,
@@ -21,6 +22,8 @@ struct Cli {
     init_ide: bool,
     src_dir: PathBuf,
     out_dir: PathBuf,
+    language: LanguageMode,
+    language_set: bool,
     src_dir_set: bool,
     out_dir_set: bool,
 }
@@ -62,6 +65,8 @@ fn parse_cli(args: Vec<String>) -> Result<Cli, String> {
             init_ide: false,
             src_dir: PathBuf::from(DEFAULT_SRC_DIR),
             out_dir: PathBuf::from(DEFAULT_OUT_DIR),
+            language: LanguageMode::Auto,
+            language_set: false,
             src_dir_set: false,
             out_dir_set: false,
         });
@@ -78,6 +83,8 @@ fn parse_cli(args: Vec<String>) -> Result<Cli, String> {
         init_ide: false,
         src_dir: PathBuf::from(DEFAULT_SRC_DIR),
         out_dir: PathBuf::from(DEFAULT_OUT_DIR),
+        language: LanguageMode::Auto,
+        language_set: false,
         src_dir_set: false,
         out_dir_set: false,
     };
@@ -118,6 +125,18 @@ fn parse_cli(args: Vec<String>) -> Result<Cli, String> {
                 };
                 cli.out_dir = PathBuf::from(path);
                 cli.out_dir_set = true;
+            }
+            "--language" => {
+                i += 1;
+                let Some(value) = args.get(i) else {
+                    return Err(
+                        "エラー: --language の後に auto、rust、lisp のどれかが必要です".to_string(),
+                    );
+                };
+                cli.language = LanguageMode::parse(value).ok_or_else(|| {
+                    format!("エラー: --language は auto、rust、lisp のどれかを指定してください: `{value}`")
+                })?;
+                cli.language_set = true;
             }
             "-o" | "--output" => {
                 i += 1;
@@ -164,6 +183,10 @@ fn run_init_ide_mode(cli: &Cli) -> Result<(), String> {
         return Err("エラー: --init-ide では --out は使いません".to_string());
     }
 
+    if cli.language_set {
+        return Err("エラー: --language は --sync または --watch と一緒に使います".to_string());
+    }
+
     fs::create_dir_all(&cli.src_dir).map_err(|err| {
         format!(
             "エラー: `{}` を作成できません: {err}",
@@ -193,9 +216,9 @@ fn run_project_mode(cli: &Cli) -> Result<(), String> {
     }
 
     if cli.watch {
-        watch_project(&cli.src_dir, &cli.out_dir)
+        watch_project(&cli.src_dir, &cli.out_dir, cli.language)
     } else {
-        let count = sync_project(&cli.src_dir, &cli.out_dir)?;
+        let count = sync_project(&cli.src_dir, &cli.out_dir, cli.language)?;
         println!(
             "OK: {} 件を {} から {} へ変換しました",
             count,
@@ -209,6 +232,10 @@ fn run_project_mode(cli: &Cli) -> Result<(), String> {
 fn run_single_file_mode(cli: &Cli) -> Result<(), String> {
     if cli.src_dir_set || cli.out_dir_set {
         return Err("エラー: --src/--out は --sync または --watch と一緒に使います".to_string());
+    }
+
+    if cli.language_set {
+        return Err("エラー: 単体ファイル変換では --language は使いません".to_string());
     }
 
     let Some(input_path) = &cli.input_path else {
@@ -287,7 +314,7 @@ fn compile_single_source(input_path: &std::path::Path, source: &str) -> Result<S
 
 fn print_usage() {
     println!(
-        "Transplanter (耕訳機)\n\nUsage:\n  transplanter <input.rs|input.scm|input.lisp>\n  transplanter <input.rs|input.scm|input.lisp> -o <output.py>\n  transplanter <input.rs|input.scm|input.lisp> --check\n  transplanter --init-ide [--src rs_src]\n  transplanter --sync [--src rs_src] [--out py_src]\n  transplanter --watch [--src rs_src] [--out py_src]\n  transplanter --version"
+        "Transplanter (耕訳機)\n\nUsage:\n  transplanter <input.rs|input.scm|input.lisp>\n  transplanter <input.rs|input.scm|input.lisp> -o <output.py>\n  transplanter <input.rs|input.scm|input.lisp> --check\n  transplanter --init-ide [--src rs_src]\n  transplanter --sync [--src rs_src] [--out py_src] [--language auto|rust|lisp]\n  transplanter --watch [--src rs_src] [--out py_src] [--language auto|rust|lisp]\n  transplanter --version"
     );
 }
 

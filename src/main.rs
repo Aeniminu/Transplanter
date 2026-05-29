@@ -3,6 +3,7 @@ use std::process;
 
 mod cli;
 mod ide_support;
+mod language;
 mod lisp_check;
 mod paths;
 mod project;
