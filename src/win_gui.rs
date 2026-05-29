@@ -30,8 +30,8 @@ use windows::core::PCWSTR;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateRoundRectRgn,
-    CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_CENTER, DT_LEFT,
-    DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FillRect, HBRUSH, HDC,
+    CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_LEFT, DT_SINGLELINE,
+    DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FillRect, HBRUSH, HDC,
     HFONT, HPEN, IntersectClipRect, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_NULL,
     RestoreDC, RoundRect, SaveDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetPixel,
     SetTextColor, SetWindowRgn, TRANSPARENT, UpdateWindow,
@@ -39,20 +39,20 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Console::FreeConsole;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetCursorPos, GetDlgCtrlID, GetMessageW,
     GetWindowLongPtrW, GetWindowTextW, HMENU, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
     HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, IDYES, LoadCursorW,
     MB_ICONERROR, MB_ICONINFORMATION, MB_YESNO, MINMAXINFO, MSG, MessageBoxW, MoveWindow,
     PostQuitMessage, RegisterClassW, SW_MINIMIZE, SW_SHOW, SendMessageW, SetTimer,
     SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND,
-    WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY,
-    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-    WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ENTERSIZEMOVE,
+    WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_SIZE, WM_SIZING, WM_TIMER,
+    WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_TOPLEFT, WMSZ_TOPRIGHT, WNDCLASSW, WS_CHILD,
+    WS_CLIPCHILDREN, WS_POPUP,
 };
 
 const CLASS_NAME: &str = "transplanter_window";
@@ -88,6 +88,8 @@ const WINDOW_WIDTH: i32 = 704;
 const WINDOW_HEIGHT: i32 = 620;
 const MIN_WINDOW_WIDTH: i32 = 520;
 const MIN_WINDOW_HEIGHT: i32 = 460;
+const UI_SCALE_MIN: f32 = 0.75;
+const UI_SCALE_MAX: f32 = 1.75;
 const TITLE_HEIGHT: i32 = 66;
 const EDITOR_LEFT: i32 = 14;
 const EDITOR_TOP: i32 = 66;
@@ -124,7 +126,6 @@ const COLOR_GUTTER_LINE: u32 = rgb(82, 84, 82);
 const COLOR_SCROLL: u32 = rgb(75, 77, 75);
 const COLOR_TITLE_SHADOW_SOFT: u32 = rgb(80, 83, 81);
 const COLOR_TITLE_SHADOW_DEEP: u32 = rgb(75, 78, 76);
-const COLOR_EDIT_SHADOW_SOFT: u32 = rgb(39, 39, 39);
 const COLOR_EDIT_SHADOW_DEEP: u32 = rgb(36, 36, 36);
 
 const RUN_ICON: [&str; 13] = [
@@ -214,19 +215,14 @@ struct Theme {
     scroll: HBRUSH,
     title_shadow_soft: HBRUSH,
     title_shadow_deep: HBRUSH,
-    edit_shadow_soft: HBRUSH,
     edit_shadow_deep: HBRUSH,
     icon: HBRUSH,
     no_outline: HPEN,
     font: HFONT,
-    title_font: HFONT,
-    code_font: HFONT,
-    code_hover_font: HFONT,
 }
 
 impl Theme {
     unsafe fn new() -> Self {
-        let ui_font_name = wide("Yu Gothic UI");
         let code_font_name = wide("Cascadia Mono");
         Self {
             background: CreateSolidBrush(COLOR_BACKGROUND),
@@ -241,7 +237,6 @@ impl Theme {
             scroll: CreateSolidBrush(COLOR_SCROLL),
             title_shadow_soft: CreateSolidBrush(COLOR_TITLE_SHADOW_SOFT),
             title_shadow_deep: CreateSolidBrush(COLOR_TITLE_SHADOW_DEEP),
-            edit_shadow_soft: CreateSolidBrush(COLOR_EDIT_SHADOW_SOFT),
             edit_shadow_deep: CreateSolidBrush(COLOR_EDIT_SHADOW_DEEP),
             icon: CreateSolidBrush(COLOR_TEXT),
             no_outline: CreatePen(PS_NULL, 0, 0),
@@ -261,56 +256,53 @@ impl Theme {
                 (DEFAULT_PITCH | FF_DONTCARE) as u32,
                 code_font_name.as_ptr(),
             ),
-            title_font: CreateFontW(
-                -22,
-                0,
-                0,
-                0,
-                FW_BOLD as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET as u32,
-                OUT_DEFAULT_PRECIS as u32,
-                CLIP_DEFAULT_PRECIS as u32,
-                CLEARTYPE_QUALITY as u32,
-                (DEFAULT_PITCH | FF_DONTCARE) as u32,
-                code_font_name.as_ptr(),
-            ),
-            code_font: CreateFontW(
-                -20,
-                0,
-                0,
-                0,
-                FW_BOLD as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET as u32,
-                OUT_DEFAULT_PRECIS as u32,
-                CLIP_DEFAULT_PRECIS as u32,
-                CLEARTYPE_QUALITY as u32,
-                (DEFAULT_PITCH | FF_DONTCARE) as u32,
-                ui_font_name.as_ptr(),
-            ),
-            code_hover_font: CreateFontW(
-                -22,
-                0,
-                0,
-                0,
-                FW_BOLD as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET as u32,
-                OUT_DEFAULT_PRECIS as u32,
-                CLIP_DEFAULT_PRECIS as u32,
-                CLEARTYPE_QUALITY as u32,
-                (DEFAULT_PITCH | FF_DONTCARE) as u32,
-                ui_font_name.as_ptr(),
-            ),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct RenderFonts {
+    title: HFONT,
+    code: HFONT,
+    code_hover: HFONT,
+}
+
+impl RenderFonts {
+    unsafe fn new(scale: f32) -> Self {
+        let ui_font_name = wide("Yu Gothic UI");
+        let code_font_name = wide("Cascadia Mono");
+        Self {
+            title: create_scaled_font(-22, scale, code_font_name.as_ptr()),
+            code: create_scaled_font(-20, scale, ui_font_name.as_ptr()),
+            code_hover: create_scaled_font(-22, scale, ui_font_name.as_ptr()),
+        }
+    }
+
+    unsafe fn delete(self) {
+        DeleteObject(self.title as _);
+        DeleteObject(self.code as _);
+        DeleteObject(self.code_hover as _);
+    }
+}
+
+unsafe fn create_scaled_font(base_height: i32, scale: f32, name: *const u16) -> HFONT {
+    let height = -((base_height.abs() as f32 * scale).round().max(1.0) as i32);
+    CreateFontW(
+        height,
+        0,
+        0,
+        0,
+        FW_BOLD as i32,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET as u32,
+        OUT_DEFAULT_PRECIS as u32,
+        CLIP_DEFAULT_PRECIS as u32,
+        CLEARTYPE_QUALITY as u32,
+        (DEFAULT_PITCH | FF_DONTCARE) as u32,
+        name,
+    )
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -335,9 +327,12 @@ struct GuiState {
     active: bool,
     spinner: usize,
     hover_target: Option<HoverTarget>,
+    pressed_title_button: Option<TitleButton>,
     horizontal_scroll: i32,
     horizontal_scroll_metrics: Option<HorizontalScrollMetrics>,
     horizontal_scroll_drag: Option<HorizontalScrollDrag>,
+    resize_mode: Option<ResizeMode>,
+    ui_scale: f32,
     update_check_started: bool,
     update_busy: bool,
     update: Option<ReleaseInfo>,
@@ -349,6 +344,20 @@ enum HoverTarget {
     OutDir,
     Language,
     UpdateStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TitleButton {
+    Run,
+    Step,
+    Minimize,
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResizeMode {
+    Edge,
+    Corner,
 }
 
 struct WatchHandle {
@@ -376,49 +385,113 @@ impl ControlRect {
             height,
         }
     }
+
+    fn to_rect(self) -> RECT {
+        RECT {
+            left: self.x,
+            top: self.y,
+            right: self.x + self.width,
+            bottom: self.y + self.height,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct WindowLayout {
     width: i32,
     height: i32,
+    scale: f32,
 }
 
 impl WindowLayout {
-    fn new(width: i32, height: i32) -> Self {
+    fn new(width: i32, height: i32, scale: f32) -> Self {
         Self {
             width: width.max(MIN_WINDOW_WIDTH),
             height: height.max(MIN_WINDOW_HEIGHT),
+            scale: scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX),
         }
     }
 
+    fn s(self, value: i32) -> i32 {
+        scaled_len(value, self.scale)
+    }
+
+    fn title_height(self) -> i32 {
+        self.s(TITLE_HEIGHT)
+    }
+
+    fn editor_left(self) -> i32 {
+        self.s(EDITOR_LEFT)
+    }
+
+    fn editor_top(self) -> i32 {
+        self.s(EDITOR_TOP)
+    }
+
     fn editor_right(self) -> i32 {
-        self.width - 14
+        self.width - self.s(14)
     }
 
     fn editor_bottom(self) -> i32 {
-        self.height - 14
+        self.height - self.s(14)
     }
 
     fn code_right(self) -> i32 {
-        self.editor_right() - 28
+        self.editor_right() - self.s(28)
     }
 
     fn value_right(self) -> i32 {
-        self.editor_right() - 36
+        self.editor_right() - self.s(36)
     }
 
-    fn minimize_button(self) -> ControlRect {
-        ControlRect::new(self.width - 104, 18, 40, 40)
+    fn content_left(self) -> i32 {
+        self.s(CONTENT_LEFT)
     }
 
-    fn close_button(self) -> ControlRect {
-        ControlRect::new(self.width - 52, 18, 40, 40)
+    fn gutter_right(self) -> i32 {
+        self.s(GUTTER_RIGHT)
+    }
+
+    fn text_row_height(self) -> i32 {
+        self.s(TEXT_ROW_HEIGHT).max(1)
+    }
+
+    fn horizontal_scroll_height(self) -> i32 {
+        self.s(HORIZONTAL_SCROLL_HEIGHT).max(1)
+    }
+
+    fn horizontal_scroll_min_thumb(self) -> i32 {
+        self.s(HORIZONTAL_SCROLL_MIN_THUMB).max(1)
+    }
+
+    fn resize_border(self) -> i32 {
+        self.s(RESIZE_BORDER).max(6)
+    }
+
+    fn icon_scale(self) -> i32 {
+        ((2.0 * self.scale).round() as i32).max(1)
+    }
+
+    fn title_button(self, button: TitleButton) -> ControlRect {
+        match button {
+            TitleButton::Run => ControlRect::new(self.s(20), self.s(18), self.s(40), self.s(40)),
+            TitleButton::Step => ControlRect::new(self.s(72), self.s(18), self.s(40), self.s(40)),
+            TitleButton::Minimize => {
+                ControlRect::new(self.width - self.s(104), self.s(18), self.s(40), self.s(40))
+            }
+            TitleButton::Close => {
+                ControlRect::new(self.width - self.s(52), self.s(18), self.s(40), self.s(40))
+            }
+        }
     }
 
     fn hidden_value_width(self, left: i32) -> i32 {
-        (self.value_right() - left).max(1)
+        (self.value_right() - self.s(left)).max(1)
     }
+}
+
+fn scaled_len(value: i32, scale: f32) -> i32 {
+    ((value as f32) * scale).round() as i32
 }
 
 #[derive(Clone, Copy)]
@@ -449,6 +522,7 @@ struct CodeText<'a> {
 #[derive(Clone, Copy)]
 struct CodeRender {
     layout: WindowLayout,
+    fonts: RenderFonts,
     scroll_x: i32,
 }
 
@@ -554,9 +628,12 @@ impl GuiState {
             active: false,
             spinner: 0,
             hover_target: None,
+            pressed_title_button: None,
             horizontal_scroll: 0,
             horizontal_scroll_metrics: None,
             horizontal_scroll_drag: None,
+            resize_mode: None,
+            ui_scale: 1.0,
             update_check_started: false,
             update_busy: false,
             update: None,
@@ -595,9 +672,23 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_SIZE => {
-            update_window_region(hwnd);
-            layout_controls(hwnd);
-            InvalidateRect(hwnd, null(), 1);
+            handle_window_size(hwnd);
+            0
+        }
+        WM_ENTERSIZEMOVE => {
+            if let Some(state) = state_from_hwnd(hwnd) {
+                state.resize_mode = None;
+            }
+            0
+        }
+        WM_SIZING => {
+            update_resize_mode(hwnd, wparam as u32);
+            1
+        }
+        WM_EXITSIZEMOVE => {
+            if let Some(state) = state_from_hwnd(hwnd) {
+                state.resize_mode = None;
+            }
             0
         }
         WM_GETMINMAXINFO => {
@@ -640,22 +731,24 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_LBUTTONDOWN => {
             let point = point_from_lparam(lparam);
+            if handle_title_button_mouse_down(hwnd, point) {
+                return 0;
+            }
             if !handle_horizontal_scroll_mouse_down(hwnd, point) {
                 handle_text_click(hwnd, point);
             }
             0
         }
         WM_LBUTTONUP => {
-            finish_horizontal_scroll_drag(hwnd);
+            let point = point_from_lparam(lparam);
+            if !finish_title_button_press(hwnd, point) {
+                finish_horizontal_scroll_drag(hwnd);
+            }
             0
         }
         WM_NCHITTEST => hit_test(hwnd, lparam),
         WM_ERASEBKGND => 1,
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => color_control(msg, wparam, lparam),
-        WM_DRAWITEM => {
-            draw_button(lparam);
-            1
-        }
         WM_CLOSE => {
             DestroyWindow(hwnd);
             0
@@ -683,42 +776,15 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
     let layout = layout_for_hwnd(hwnd);
     create_control(
         hwnd,
-        "BUTTON",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        ControlRect::new(20, 18, 40, 40),
-        ID_RUN,
-    );
-    create_control(
-        hwnd,
-        "BUTTON",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        ControlRect::new(72, 18, 40, 40),
-        ID_STEP,
-    );
-    create_control(
-        hwnd,
-        "BUTTON",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        layout.minimize_button(),
-        ID_MINIMIZE,
-    );
-    create_control(
-        hwnd,
-        "BUTTON",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        layout.close_button(),
-        ID_CLOSE,
-    );
-    create_control(
-        hwnd,
         "STATIC",
         "src_dir =",
         WS_CHILD,
-        ControlRect::new(CONTENT_LEFT, SRC_ROW_TOP, 96, TEXT_ROW_HEIGHT),
+        ControlRect::new(
+            layout.s(CONTENT_LEFT),
+            layout.s(SRC_ROW_TOP),
+            layout.s(96),
+            layout.text_row_height(),
+        ),
         ID_SRC_LABEL,
     );
     create_control(
@@ -726,7 +792,12 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "STATIC",
         "language =",
         WS_CHILD,
-        ControlRect::new(CONTENT_LEFT, LANGUAGE_ROW_TOP, 110, TEXT_ROW_HEIGHT),
+        ControlRect::new(
+            layout.s(CONTENT_LEFT),
+            layout.s(LANGUAGE_ROW_TOP),
+            layout.s(110),
+            layout.text_row_height(),
+        ),
         ID_LANGUAGE_LABEL,
     );
     let src_edit = create_control(
@@ -735,10 +806,10 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "",
         WS_CHILD | ES_AUTOHSCROLL as u32,
         ControlRect::new(
-            PATH_VALUE_LEFT,
-            SRC_ROW_TOP,
+            layout.s(PATH_VALUE_LEFT),
+            layout.s(SRC_ROW_TOP),
             layout.hidden_value_width(PATH_VALUE_LEFT),
-            30,
+            layout.s(30),
         ),
         ID_SRC_EDIT,
     );
@@ -748,7 +819,12 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "STATIC",
         "out_dir =",
         WS_CHILD,
-        ControlRect::new(CONTENT_LEFT, OUT_ROW_TOP, 96, TEXT_ROW_HEIGHT),
+        ControlRect::new(
+            layout.s(CONTENT_LEFT),
+            layout.s(OUT_ROW_TOP),
+            layout.s(96),
+            layout.text_row_height(),
+        ),
         ID_OUT_LABEL,
     );
     let out_edit = create_control(
@@ -757,10 +833,10 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
         "",
         WS_CHILD | ES_AUTOHSCROLL as u32,
         ControlRect::new(
-            PATH_VALUE_LEFT,
-            OUT_ROW_TOP,
+            layout.s(PATH_VALUE_LEFT),
+            layout.s(OUT_ROW_TOP),
             layout.hidden_value_width(PATH_VALUE_LEFT),
-            30,
+            layout.s(30),
         ),
         ID_OUT_EDIT,
     );
@@ -807,36 +883,73 @@ unsafe fn create_control(
 
 unsafe fn layout_for_hwnd(hwnd: HWND) -> WindowLayout {
     let mut rect: RECT = std::mem::zeroed();
+    let scale = state_from_hwnd(hwnd)
+        .map(|state| state.ui_scale)
+        .unwrap_or(1.0);
     if GetClientRect(hwnd, &mut rect) == 0 {
-        return WindowLayout::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+        return WindowLayout::new(WINDOW_WIDTH, WINDOW_HEIGHT, scale);
     }
-    WindowLayout::new(rect.right - rect.left, rect.bottom - rect.top)
+    WindowLayout::new(rect.right - rect.left, rect.bottom - rect.top, scale)
 }
 
 unsafe fn layout_controls(hwnd: HWND) {
     let layout = layout_for_hwnd(hwnd);
-    move_control(hwnd, ID_MINIMIZE, layout.minimize_button());
-    move_control(hwnd, ID_CLOSE, layout.close_button());
     move_control(
         hwnd,
         ID_SRC_EDIT,
         ControlRect::new(
-            PATH_VALUE_LEFT,
-            SRC_ROW_TOP,
+            layout.s(PATH_VALUE_LEFT),
+            layout.s(SRC_ROW_TOP),
             layout.hidden_value_width(PATH_VALUE_LEFT),
-            30,
+            layout.s(30),
         ),
     );
     move_control(
         hwnd,
         ID_OUT_EDIT,
         ControlRect::new(
-            PATH_VALUE_LEFT,
-            OUT_ROW_TOP,
+            layout.s(PATH_VALUE_LEFT),
+            layout.s(OUT_ROW_TOP),
             layout.hidden_value_width(PATH_VALUE_LEFT),
-            30,
+            layout.s(30),
         ),
     );
+}
+
+unsafe fn handle_window_size(hwnd: HWND) {
+    update_ui_scale_for_resize(hwnd);
+    update_window_region(hwnd);
+    layout_controls(hwnd);
+    InvalidateRect(hwnd, null(), 1);
+}
+
+unsafe fn update_resize_mode(hwnd: HWND, edge: u32) {
+    if let Some(state) = state_from_hwnd(hwnd) {
+        state.resize_mode = Some(match edge {
+            WMSZ_TOPLEFT | WMSZ_TOPRIGHT | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT => ResizeMode::Corner,
+            _ => ResizeMode::Edge,
+        });
+    }
+}
+
+unsafe fn update_ui_scale_for_resize(hwnd: HWND) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+    if state.resize_mode != Some(ResizeMode::Corner) {
+        return;
+    }
+
+    let mut rect: RECT = std::mem::zeroed();
+    if GetClientRect(hwnd, &mut rect) == 0 {
+        return;
+    }
+
+    let width_scale = (rect.right - rect.left) as f32 / WINDOW_WIDTH as f32;
+    let height_scale = (rect.bottom - rect.top) as f32 / WINDOW_HEIGHT as f32;
+    state.ui_scale = width_scale
+        .min(height_scale)
+        .clamp(UI_SCALE_MIN, UI_SCALE_MAX);
 }
 
 unsafe fn move_control(parent: HWND, id: i32, bounds: ControlRect) {
@@ -848,7 +961,8 @@ unsafe fn move_control(parent: HWND, id: i32, bounds: ControlRect) {
 
 unsafe fn update_window_region(hwnd: HWND) {
     let layout = layout_for_hwnd(hwnd);
-    let rounded = CreateRoundRectRgn(0, 0, layout.width + 1, layout.height + 1, 10, 10);
+    let radius = layout.s(10).max(1);
+    let rounded = CreateRoundRectRgn(0, 0, layout.width + 1, layout.height + 1, radius, radius);
     if !rounded.is_null() {
         SetWindowRgn(hwnd, rounded, 1);
     }
@@ -873,6 +987,8 @@ unsafe fn paint_window(hwnd: HWND) {
         blink_on,
         update_available,
         requested_scroll,
+        active,
+        pressed_title_button,
     ) = state_from_hwnd(hwnd)
         .map(|state| {
             (
@@ -884,6 +1000,8 @@ unsafe fn paint_window(hwnd: HWND) {
                 state.spinner % 4 < 2,
                 update_clickable(state),
                 state.horizontal_scroll,
+                state.active,
+                state.pressed_title_button,
             )
         })
         .unwrap_or_else(|| {
@@ -896,12 +1014,16 @@ unsafe fn paint_window(hwnd: HWND) {
                 true,
                 false,
                 0,
+                false,
+                None,
             )
         });
     let mut rendered_scroll_metrics = None;
     let mut rendered_scroll = 0;
 
     with_theme(|theme| {
+        let fonts = RenderFonts::new(layout.scale);
+        let paint_state = SaveDC(hdc);
         let code_text = CodeText {
             src: &src_text,
             out: &out_text,
@@ -911,7 +1033,7 @@ unsafe fn paint_window(hwnd: HWND) {
             blink_on,
             update_available,
         };
-        let virtual_width = measure_code_content_width(hdc, theme, code_text);
+        let virtual_width = measure_code_content_width(hdc, fonts, code_text, layout);
         rendered_scroll_metrics =
             horizontal_scroll_metrics(layout, virtual_width, requested_scroll.max(0));
         rendered_scroll = rendered_scroll_metrics
@@ -919,6 +1041,7 @@ unsafe fn paint_window(hwnd: HWND) {
             .unwrap_or(0);
         let render = CodeRender {
             layout,
+            fonts,
             scroll_x: rendered_scroll,
         };
 
@@ -931,19 +1054,29 @@ unsafe fn paint_window(hwnd: HWND) {
         FillRect(hdc, &background, theme.panel);
         SelectObject(hdc, theme.no_outline as _);
         SelectObject(hdc, theme.panel as _);
-        RoundRect(hdc, 0, 0, layout.width, layout.height, 10, 10);
+        let window_radius = layout.s(10).max(1);
+        RoundRect(
+            hdc,
+            0,
+            0,
+            layout.width,
+            layout.height,
+            window_radius,
+            window_radius,
+        );
 
         let title = RECT {
             left: 0,
             top: 0,
             right: layout.width,
-            bottom: TITLE_HEIGHT,
+            bottom: layout.title_height(),
         };
         FillRect(hdc, &title, theme.title);
+        draw_title_buttons(hdc, theme, layout, active, pressed_title_button);
 
         let editor = RECT {
-            left: EDITOR_LEFT,
-            top: EDITOR_TOP,
+            left: layout.editor_left(),
+            top: layout.editor_top(),
             right: layout.editor_right(),
             bottom: layout.editor_bottom(),
         };
@@ -955,45 +1088,47 @@ unsafe fn paint_window(hwnd: HWND) {
             editor.top,
             editor.right,
             editor.bottom,
-            8,
-            8,
+            layout.s(8).max(1),
+            layout.s(8).max(1),
         );
 
         let gutter_line = RECT {
-            left: GUTTER_RIGHT - 1,
-            top: EDITOR_TOP,
-            right: GUTTER_RIGHT + 2,
+            left: layout.gutter_right() - layout.s(1),
+            top: layout.editor_top(),
+            right: layout.gutter_right() + layout.s(2),
             bottom: layout.editor_bottom(),
         };
         FillRect(hdc, &gutter_line, theme.gutter_line);
 
         if needs_scrollbar(&status_text) {
             let scrollbar = RECT {
-                left: layout.editor_right() - 12,
-                top: EDITOR_TOP + 6,
-                right: layout.editor_right() - 2,
-                bottom: layout.editor_bottom() - 330,
+                left: layout.editor_right() - layout.s(12),
+                top: layout.editor_top() + layout.s(6),
+                right: layout.editor_right() - layout.s(2),
+                bottom: layout.editor_bottom() - layout.s(330),
             };
             FillRect(hdc, &scrollbar, theme.scroll);
         }
 
-        draw_title_text(hdc, theme, layout, "Transplanter");
+        draw_title_text(hdc, layout, fonts, "Transplanter");
         let clip_state = SaveDC(hdc);
         IntersectClipRect(
             hdc,
-            CONTENT_LEFT,
-            EDITOR_TOP,
+            layout.content_left(),
+            layout.editor_top(),
             layout.code_right(),
             layout.editor_bottom(),
         );
         draw_import_line(hdc, theme, render);
-        draw_status_text(hdc, theme, code_text, render);
+        draw_status_text(hdc, code_text, render);
         draw_config_text(hdc, theme, code_text, render);
         RestoreDC(hdc, clip_state);
 
         if let Some(metrics) = rendered_scroll_metrics {
             draw_horizontal_scrollbar(hdc, theme, metrics);
         }
+        RestoreDC(hdc, paint_state);
+        fonts.delete();
     });
 
     EndPaint(hwnd, &ps);
@@ -1004,15 +1139,92 @@ unsafe fn paint_window(hwnd: HWND) {
     }
 }
 
-unsafe fn draw_title_text(hdc: HDC, theme: &Theme, layout: WindowLayout, text: &str) {
+unsafe fn draw_title_buttons(
+    hdc: HDC,
+    theme: &Theme,
+    layout: WindowLayout,
+    active: bool,
+    pressed: Option<TitleButton>,
+) {
+    for button in [
+        TitleButton::Run,
+        TitleButton::Step,
+        TitleButton::Minimize,
+        TitleButton::Close,
+    ] {
+        draw_title_button(hdc, theme, layout, button, active, pressed == Some(button));
+    }
+}
+
+unsafe fn draw_title_button(
+    hdc: HDC,
+    theme: &Theme,
+    layout: WindowLayout,
+    button: TitleButton,
+    active: bool,
+    pressed: bool,
+) {
+    let bounds = layout.title_button(button).to_rect();
+    let active_controls = active && matches!(button, TitleButton::Run | TitleButton::Step);
+    let surface = if active_controls {
+        ButtonSurface {
+            brush: if pressed {
+                theme.run_active_down
+            } else {
+                theme.run_active
+            },
+            background: ButtonBackground::Title,
+        }
+    } else {
+        ButtonSurface {
+            brush: if pressed {
+                theme.button_down
+            } else {
+                theme.button
+            },
+            background: ButtonBackground::Title,
+        }
+    };
+    let face_rect = draw_game_button_surface(hdc, &bounds, theme, surface, layout.scale);
+
+    match button {
+        TitleButton::Run => {
+            let icon = if active { &STOP_ICON } else { &RUN_ICON };
+            draw_mask_icon(hdc, &face_rect, icon, layout.icon_scale(), theme.icon);
+        }
+        TitleButton::Step => {
+            let icon = if active { &PAUSE_ICON } else { &STEP_ICON };
+            draw_mask_icon(hdc, &face_rect, icon, layout.icon_scale(), theme.icon);
+        }
+        TitleButton::Minimize => {
+            draw_mask_icon(
+                hdc,
+                &face_rect,
+                &MINIMIZE_ICON,
+                layout.icon_scale(),
+                theme.icon,
+            );
+        }
+        TitleButton::Close => {
+            let icon_background = if pressed {
+                COLOR_BUTTON_DOWN
+            } else {
+                COLOR_BUTTON
+            };
+            draw_close_icon(hdc, &face_rect, icon_background, layout.scale);
+        }
+    }
+}
+
+unsafe fn draw_title_text(hdc: HDC, layout: WindowLayout, fonts: RenderFonts, text: &str) {
     let mut rect = RECT {
-        left: 124,
-        top: 20,
-        right: layout.width - 120,
-        bottom: 56,
+        left: layout.s(124),
+        top: layout.s(20),
+        right: layout.width - layout.s(120),
+        bottom: layout.s(56),
     };
     let text = wide(text);
-    SelectObject(hdc, theme.title_font as _);
+    SelectObject(hdc, fonts.title as _);
     SetBkMode(hdc, TRANSPARENT as i32);
     SetTextColor(hdc, COLOR_TEXT);
     DrawTextW(
@@ -1027,19 +1239,16 @@ unsafe fn draw_title_text(hdc: HDC, theme: &Theme, layout: WindowLayout, text: &
 unsafe fn draw_config_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: CodeRender) {
     draw_assignment_line(
         hdc,
-        theme,
         render,
         AssignmentLine::src("src_dir", text.src, text.blink_on, text.hover_target),
     );
     draw_assignment_line(
         hdc,
-        theme,
         render,
         AssignmentLine::out("out_dir", text.out, text.blink_on, text.hover_target),
     );
     draw_assignment_line(
         hdc,
-        theme,
         render,
         AssignmentLine::language("language", text.language, text.blink_on, text.hover_target),
     );
@@ -1084,22 +1293,24 @@ unsafe fn draw_transplanter_call(hdc: HDC, theme: &Theme, render: CodeRender) {
 
 unsafe fn draw_code_segments(
     hdc: HDC,
-    theme: &Theme,
+    _theme: &Theme,
     render: CodeRender,
     top: i32,
     segments: &[(&str, u32)],
 ) {
-    SelectObject(hdc, theme.code_font as _);
+    SelectObject(hdc, render.fonts.code as _);
     SetBkMode(hdc, TRANSPARENT as i32);
 
-    let mut left = CONTENT_LEFT;
+    let top = render.layout.s(top);
+    let row_height = render.layout.text_row_height();
+    let mut left = render.layout.content_left();
     for (text, color) in segments {
         let text = wide(text);
         let mut rect = RECT {
             left: left - render.scroll_x,
             top,
             right: render.layout.code_right(),
-            bottom: top + TEXT_ROW_HEIGHT,
+            bottom: top + row_height,
         };
         SetTextColor(hdc, *color);
         DrawTextW(
@@ -1114,7 +1325,7 @@ unsafe fn draw_code_segments(
             left: 0,
             top: 0,
             right: 0,
-            bottom: TEXT_ROW_HEIGHT,
+            bottom: row_height,
         };
         DrawTextW(
             hdc,
@@ -1187,20 +1398,20 @@ impl<'a> AssignmentLine<'a> {
     }
 }
 
-unsafe fn draw_assignment_line(
-    hdc: HDC,
-    theme: &Theme,
-    render: CodeRender,
-    line: AssignmentLine<'_>,
-) {
-    SelectObject(hdc, theme.code_font as _);
+unsafe fn draw_assignment_line(hdc: HDC, render: CodeRender, line: AssignmentLine<'_>) {
+    SelectObject(hdc, render.fonts.code as _);
     SetBkMode(hdc, TRANSPARENT as i32);
+    let top = render.layout.s(line.top);
+    let row_height = render.layout.text_row_height();
+    let content_left = render.layout.content_left();
+    let equal_left = render.layout.s(line.equal_left);
+    let value_left = render.layout.s(line.value_left);
 
     let mut key_rect = RECT {
-        left: CONTENT_LEFT - render.scroll_x,
-        top: line.top,
-        right: line.equal_left - 4 - render.scroll_x,
-        bottom: line.top + TEXT_ROW_HEIGHT,
+        left: content_left - render.scroll_x,
+        top,
+        right: equal_left - render.layout.s(4) - render.scroll_x,
+        bottom: top + row_height,
     };
     let key = wide(line.key);
     SetTextColor(hdc, COLOR_KEYWORD);
@@ -1213,10 +1424,10 @@ unsafe fn draw_assignment_line(
     );
 
     let mut equal_rect = RECT {
-        left: line.equal_left - render.scroll_x,
-        top: line.top,
-        right: line.value_left - render.scroll_x,
-        bottom: line.top + TEXT_ROW_HEIGHT,
+        left: equal_left - render.scroll_x,
+        top,
+        right: value_left - render.scroll_x,
+        bottom: top + row_height,
     };
     let equal = wide("=");
     DrawTextW(
@@ -1233,18 +1444,18 @@ unsafe fn draw_assignment_line(
         line.value
     };
     let mut value_rect = RECT {
-        left: line.value_left - render.scroll_x,
-        top: line.top,
+        left: value_left - render.scroll_x,
+        top,
         right: render.layout.code_right(),
-        bottom: line.top + TEXT_ROW_HEIGHT,
+        bottom: top + row_height,
     };
     let value = wide(display_value);
     SelectObject(
         hdc,
         if line.hovered {
-            theme.code_hover_font
+            render.fonts.code_hover
         } else {
-            theme.code_font
+            render.fonts.code
         } as _,
     );
     SetTextColor(hdc, line.value_color);
@@ -1257,7 +1468,7 @@ unsafe fn draw_assignment_line(
     );
 }
 
-unsafe fn draw_status_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: CodeRender) {
+unsafe fn draw_status_text(hdc: HDC, text: CodeText<'_>, render: CodeRender) {
     let status = if text.update_available {
         STATUS_UPDATE_AVAILABLE
     } else {
@@ -1269,19 +1480,20 @@ unsafe fn draw_status_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: 
 
     let compact = compact_error_message(status);
     let compact = truncate_for_status(&compact, 42);
+    let top = render.layout.s(STATUS_ROW_TOP);
     let mut rect = RECT {
-        left: CONTENT_LEFT - render.scroll_x,
-        top: STATUS_ROW_TOP,
+        left: render.layout.content_left() - render.scroll_x,
+        top,
         right: render.layout.code_right(),
-        bottom: STATUS_ROW_TOP + TEXT_ROW_HEIGHT,
+        bottom: top + render.layout.text_row_height(),
     };
     let display_text = wide(&format!("status = \"{compact}\""));
     SelectObject(
         hdc,
         if text.hover_target == Some(HoverTarget::UpdateStatus) {
-            theme.code_hover_font
+            render.fonts.code_hover
         } else {
-            theme.code_font
+            render.fonts.code
         } as _,
     );
     SetBkMode(hdc, TRANSPARENT as i32);
@@ -1321,15 +1533,21 @@ fn needs_scrollbar(status: &str) -> bool {
     status.lines().count() > 6 || status.chars().count() > 180
 }
 
-unsafe fn measure_code_content_width(hdc: HDC, theme: &Theme, text: CodeText<'_>) -> i32 {
-    let mut right = CONTENT_LEFT;
+unsafe fn measure_code_content_width(
+    hdc: HDC,
+    fonts: RenderFonts,
+    text: CodeText<'_>,
+    layout: WindowLayout,
+) -> i32 {
+    let mut right = layout.content_left();
     let module_name = transplanter_version_module();
     let module_name = format!(" {module_name}");
     right = right.max(
-        CONTENT_LEFT
+        layout.content_left()
             + measure_segments_width(
                 hdc,
-                theme,
+                fonts,
+                layout,
                 &[
                     ("import", COLOR_KEYWORD),
                     (&module_name, COLOR_BUILTIN),
@@ -1340,35 +1558,40 @@ unsafe fn measure_code_content_width(hdc: HDC, theme: &Theme, text: CodeText<'_>
     );
 
     if let Some(status_text) = status_display_text(text.status, text.update_available) {
-        right = right.max(CONTENT_LEFT + measure_text_width(hdc, theme.code_font, &status_text));
+        right = right
+            .max(layout.content_left() + measure_text_width(hdc, fonts.code, layout, &status_text));
     }
 
     right = right.max(measure_assignment_right(
         hdc,
-        theme,
+        fonts,
+        layout,
         PATH_VALUE_LEFT,
         text.src,
         text.blink_on,
     ));
     right = right.max(measure_assignment_right(
         hdc,
-        theme,
+        fonts,
+        layout,
         PATH_VALUE_LEFT,
         text.out,
         text.blink_on,
     ));
     right = right.max(measure_assignment_right(
         hdc,
-        theme,
+        fonts,
+        layout,
         LANGUAGE_VALUE_LEFT,
         text.language,
         text.blink_on,
     ));
     right = right.max(
-        CONTENT_LEFT
+        layout.content_left()
             + measure_segments_width(
                 hdc,
-                theme,
+                fonts,
+                layout,
                 &[
                     ("transplanter", COLOR_BUILTIN),
                     ("(", COLOR_TEXT),
@@ -1382,12 +1605,13 @@ unsafe fn measure_code_content_width(hdc: HDC, theme: &Theme, text: CodeText<'_>
             ),
     );
 
-    right - CONTENT_LEFT
+    right - layout.content_left()
 }
 
 unsafe fn measure_assignment_right(
     hdc: HDC,
-    theme: &Theme,
+    fonts: RenderFonts,
+    layout: WindowLayout,
     value_left: i32,
     value: &str,
     blink_on: bool,
@@ -1397,23 +1621,28 @@ unsafe fn measure_assignment_right(
     } else {
         value
     };
-    value_left + measure_text_width(hdc, theme.code_font, display_value)
+    layout.s(value_left) + measure_text_width(hdc, fonts.code, layout, display_value)
 }
 
-unsafe fn measure_segments_width(hdc: HDC, theme: &Theme, segments: &[(&str, u32)]) -> i32 {
+unsafe fn measure_segments_width(
+    hdc: HDC,
+    fonts: RenderFonts,
+    layout: WindowLayout,
+    segments: &[(&str, u32)],
+) -> i32 {
     segments
         .iter()
-        .map(|(text, _)| measure_text_width(hdc, theme.code_font, text))
+        .map(|(text, _)| measure_text_width(hdc, fonts.code, layout, text))
         .sum()
 }
 
-unsafe fn measure_text_width(hdc: HDC, font: HFONT, text: &str) -> i32 {
+unsafe fn measure_text_width(hdc: HDC, font: HFONT, layout: WindowLayout, text: &str) -> i32 {
     let text = wide(text);
     let mut rect = RECT {
         left: 0,
         top: 0,
         right: 0,
-        bottom: TEXT_ROW_HEIGHT,
+        bottom: layout.text_row_height(),
     };
     SelectObject(hdc, font as _);
     DrawTextW(
@@ -1446,21 +1675,21 @@ fn horizontal_scroll_metrics(
     virtual_width: i32,
     requested_scroll: i32,
 ) -> Option<HorizontalScrollMetrics> {
-    let viewport_width = (layout.code_right() - CONTENT_LEFT).max(1);
+    let viewport_width = (layout.code_right() - layout.content_left()).max(1);
     let max_scroll = (virtual_width - viewport_width).max(0);
     if max_scroll <= 0 {
         return None;
     }
 
     let track = RECT {
-        left: CONTENT_LEFT,
-        top: layout.editor_bottom() - HORIZONTAL_SCROLL_HEIGHT - 5,
+        left: layout.content_left(),
+        top: layout.editor_bottom() - layout.horizontal_scroll_height() - layout.s(5),
         right: layout.code_right(),
-        bottom: layout.editor_bottom() - 5,
+        bottom: layout.editor_bottom() - layout.s(5),
     };
     let track_width = (track.right - track.left).max(1);
     let thumb_width = ((viewport_width * track_width) / virtual_width.max(1))
-        .clamp(HORIZONTAL_SCROLL_MIN_THUMB, track_width);
+        .clamp(layout.horizontal_scroll_min_thumb(), track_width);
     let travel = (track_width - thumb_width).max(1);
     let scroll = requested_scroll.clamp(0, max_scroll);
     let thumb_left = track.left + (travel * scroll) / max_scroll.max(1);
@@ -1484,14 +1713,26 @@ unsafe fn draw_horizontal_scrollbar(hdc: HDC, theme: &Theme, metrics: Horizontal
     FillRect(hdc, &metrics.thumb, theme.scroll);
 }
 
+fn title_button_at(point: POINT, layout: WindowLayout) -> Option<TitleButton> {
+    [
+        TitleButton::Run,
+        TitleButton::Step,
+        TitleButton::Minimize,
+        TitleButton::Close,
+    ]
+    .into_iter()
+    .find(|button| point_in_rect(point, layout.title_button(*button).to_rect()))
+}
+
 unsafe fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let mut point = point_from_lparam(lparam);
     ScreenToClient(hwnd, &mut point);
     let layout = layout_for_hwnd(hwnd);
-    let left = point.x >= 0 && point.x < RESIZE_BORDER;
-    let right = point.x >= layout.width - RESIZE_BORDER && point.x < layout.width;
-    let top = point.y >= 0 && point.y < RESIZE_BORDER;
-    let bottom = point.y >= layout.height - RESIZE_BORDER && point.y < layout.height;
+    let resize_border = layout.resize_border();
+    let left = point.x >= 0 && point.x < resize_border;
+    let right = point.x >= layout.width - resize_border && point.x < layout.width;
+    let top = point.y >= 0 && point.y < resize_border;
+    let bottom = point.y >= layout.height - resize_border && point.y < layout.height;
 
     match (left, right, top, bottom) {
         (true, _, true, _) => HTTOPLEFT as LRESULT,
@@ -1502,14 +1743,60 @@ unsafe fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         (_, true, _, _) => HTRIGHT as LRESULT,
         (_, _, true, _) => HTTOP as LRESULT,
         (_, _, _, true) => HTBOTTOM as LRESULT,
+        _ if title_button_at(point, layout).is_some() => HTCLIENT as LRESULT,
         _ if point.y >= 0
-            && point.y < TITLE_HEIGHT
-            && point.x > 120
-            && point.x < layout.width - 112 =>
+            && point.y < layout.title_height()
+            && point.x > layout.s(120)
+            && point.x < layout.width - layout.s(112) =>
         {
             HTCAPTION as LRESULT
         }
         _ => HTCLIENT as LRESULT,
+    }
+}
+
+unsafe fn handle_title_button_mouse_down(hwnd: HWND, point: POINT) -> bool {
+    let layout = layout_for_hwnd(hwnd);
+    let Some(button) = title_button_at(point, layout) else {
+        return false;
+    };
+    if let Some(state) = state_from_hwnd(hwnd) {
+        state.pressed_title_button = Some(button);
+        SetCapture(hwnd);
+        InvalidateRect(hwnd, null(), 0);
+        return true;
+    }
+    false
+}
+
+unsafe fn finish_title_button_press(hwnd: HWND, point: POINT) -> bool {
+    let pressed = if let Some(state) = state_from_hwnd(hwnd) {
+        state.pressed_title_button.take()
+    } else {
+        None
+    };
+    let Some(button) = pressed else {
+        return false;
+    };
+
+    ReleaseCapture();
+    InvalidateRect(hwnd, null(), 0);
+    if title_button_at(point, layout_for_hwnd(hwnd)) == Some(button) {
+        activate_title_button(hwnd, button);
+    }
+    true
+}
+
+unsafe fn activate_title_button(hwnd: HWND, button: TitleButton) {
+    match button {
+        TitleButton::Run => toggle_run(hwnd),
+        TitleButton::Step => sync_once(hwnd),
+        TitleButton::Minimize => {
+            ShowWindow(hwnd, SW_MINIMIZE);
+        }
+        TitleButton::Close => {
+            DestroyWindow(hwnd);
+        }
     }
 }
 
@@ -1602,12 +1889,13 @@ unsafe fn update_hover_from_point(hwnd: HWND, point: POINT) {
     }
 }
 
-fn scrolled_rect(left: i32, top: i32, right: i32, scroll_x: i32) -> RECT {
+fn scrolled_rect(layout: WindowLayout, left: i32, top: i32, right: i32, scroll_x: i32) -> RECT {
+    let top = layout.s(top);
     RECT {
-        left: left - scroll_x,
+        left: layout.s(left) - scroll_x,
         top,
         right,
-        bottom: top + TEXT_ROW_HEIGHT,
+        bottom: top + layout.text_row_height(),
     }
 }
 
@@ -1639,13 +1927,21 @@ unsafe fn hit_target_at(
 fn interactive_rect(target: HoverTarget, layout: WindowLayout, scroll_x: i32) -> RECT {
     let code_right = layout.code_right();
     match target {
-        HoverTarget::SrcDir => scrolled_rect(PATH_VALUE_LEFT, SRC_ROW_TOP, code_right, scroll_x),
-        HoverTarget::OutDir => scrolled_rect(PATH_VALUE_LEFT, OUT_ROW_TOP, code_right, scroll_x),
-        HoverTarget::Language => {
-            scrolled_rect(LANGUAGE_VALUE_LEFT, LANGUAGE_ROW_TOP, code_right, scroll_x)
+        HoverTarget::SrcDir => {
+            scrolled_rect(layout, PATH_VALUE_LEFT, SRC_ROW_TOP, code_right, scroll_x)
         }
+        HoverTarget::OutDir => {
+            scrolled_rect(layout, PATH_VALUE_LEFT, OUT_ROW_TOP, code_right, scroll_x)
+        }
+        HoverTarget::Language => scrolled_rect(
+            layout,
+            LANGUAGE_VALUE_LEFT,
+            LANGUAGE_ROW_TOP,
+            code_right,
+            scroll_x,
+        ),
         HoverTarget::UpdateStatus => {
-            scrolled_rect(CONTENT_LEFT, STATUS_ROW_TOP, code_right, scroll_x)
+            scrolled_rect(layout, CONTENT_LEFT, STATUS_ROW_TOP, code_right, scroll_x)
         }
     }
 }
@@ -1699,86 +1995,6 @@ unsafe fn color_control(msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     })
 }
 
-unsafe fn draw_button(lparam: LPARAM) {
-    let item = &*(lparam as *const DRAWITEMSTRUCT);
-    let selected = item.itemState & ODS_SELECTED != 0;
-    let id = GetDlgCtrlID(item.hwndItem);
-
-    with_theme(|theme| {
-        let active_controls = parent_state_from_child(item.hwndItem)
-            .is_some_and(|state| state.active && matches!(id, ID_RUN | ID_STEP));
-        let background = button_background(id);
-        let surface = if active_controls {
-            ButtonSurface {
-                brush: if selected {
-                    theme.run_active_down
-                } else {
-                    theme.run_active
-                },
-                background,
-            }
-        } else {
-            ButtonSurface {
-                brush: if selected {
-                    theme.button_down
-                } else {
-                    theme.button
-                },
-                background,
-            }
-        };
-        let face_rect = draw_game_button_surface(item.hDC, &item.rcItem, theme, surface);
-
-        match id {
-            ID_RUN => {
-                let icon = if active_controls {
-                    &STOP_ICON
-                } else {
-                    &RUN_ICON
-                };
-                draw_mask_icon(item.hDC, &face_rect, icon, 2, theme.icon);
-                return;
-            }
-            ID_STEP => {
-                let icon = if active_controls {
-                    &PAUSE_ICON
-                } else {
-                    &STEP_ICON
-                };
-                draw_mask_icon(item.hDC, &face_rect, icon, 2, theme.icon);
-                return;
-            }
-            ID_MINIMIZE => {
-                draw_mask_icon(item.hDC, &face_rect, &MINIMIZE_ICON, 2, theme.icon);
-                return;
-            }
-            ID_CLOSE => {
-                let icon_background = if selected {
-                    COLOR_BUTTON_DOWN
-                } else {
-                    COLOR_BUTTON
-                };
-                draw_close_icon(item.hDC, &face_rect, icon_background);
-                return;
-            }
-            _ => {}
-        }
-
-        let mut text_rect = face_rect;
-        let text = get_window_text(item.hwndItem);
-        let text = wide(&text);
-        SetBkMode(item.hDC, TRANSPARENT as i32);
-        SetTextColor(item.hDC, COLOR_BUILTIN);
-        DrawTextW(
-            item.hDC,
-            text.as_ptr(),
-            -1,
-            &mut text_rect,
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-        );
-    });
-}
-
 struct ButtonSurface {
     brush: HBRUSH,
     background: ButtonBackground,
@@ -1787,7 +2003,6 @@ struct ButtonSurface {
 #[derive(Clone, Copy)]
 enum ButtonBackground {
     Title,
-    Editor,
 }
 
 unsafe fn draw_game_button_surface(
@@ -1795,51 +2010,52 @@ unsafe fn draw_game_button_surface(
     bounds: &RECT,
     theme: &Theme,
     surface: ButtonSurface,
+    scale: f32,
 ) -> RECT {
     let background_brush = match surface.background {
         ButtonBackground::Title => theme.title,
-        ButtonBackground::Editor => theme.edit,
     };
     let shadow_soft = match surface.background {
         ButtonBackground::Title => theme.title_shadow_soft,
-        ButtonBackground::Editor => theme.edit_shadow_soft,
     };
     let shadow_deep = match surface.background {
         ButtonBackground::Title => theme.title_shadow_deep,
-        ButtonBackground::Editor => theme.edit_shadow_deep,
     };
 
     FillRect(hdc, bounds, background_brush);
 
+    let shadow = scaled_len(4, scale).max(1);
+    let soft = scaled_len(2, scale).max(1);
+    let deep = scaled_len(3, scale).max(1);
     let face = RECT {
         left: bounds.left,
         top: bounds.top,
-        right: bounds.right - 4,
-        bottom: bounds.bottom - 4,
+        right: bounds.right - shadow,
+        bottom: bounds.bottom - shadow,
     };
     let bottom_shadow_soft = RECT {
-        left: bounds.left + 2,
+        left: bounds.left + soft,
         top: face.bottom,
-        right: bounds.right - 3,
-        bottom: face.bottom + 2,
+        right: bounds.right - deep,
+        bottom: face.bottom + soft,
     };
     let bottom_shadow_deep = RECT {
-        left: bounds.left + 3,
-        top: face.bottom + 2,
-        right: bounds.right - 3,
+        left: bounds.left + deep,
+        top: face.bottom + soft,
+        right: bounds.right - deep,
         bottom: bounds.bottom,
     };
     let right_shadow_soft = RECT {
         left: face.right,
-        top: bounds.top + 2,
-        right: face.right + 2,
-        bottom: bounds.bottom - 3,
+        top: bounds.top + soft,
+        right: face.right + soft,
+        bottom: bounds.bottom - deep,
     };
     let right_shadow_deep = RECT {
-        left: face.right + 2,
-        top: bounds.top + 3,
+        left: face.right + soft,
+        top: bounds.top + deep,
         right: bounds.right,
-        bottom: bounds.bottom - 3,
+        bottom: bounds.bottom - deep,
     };
 
     FillRect(hdc, &bottom_shadow_soft, shadow_soft);
@@ -1849,39 +2065,43 @@ unsafe fn draw_game_button_surface(
 
     SelectObject(hdc, theme.no_outline as _);
     SelectObject(hdc, surface.brush as _);
-    RoundRect(hdc, face.left, face.top, face.right, face.bottom, 5, 5);
+    let radius = scaled_len(5, scale).max(1);
+    RoundRect(
+        hdc,
+        face.left,
+        face.top,
+        face.right,
+        face.bottom,
+        radius,
+        radius,
+    );
 
     face
 }
 
-fn button_background(id: i32) -> ButtonBackground {
-    match id {
-        ID_RUN | ID_STEP | ID_MINIMIZE | ID_CLOSE => ButtonBackground::Title,
-        _ => ButtonBackground::Editor,
-    }
-}
-
-unsafe fn draw_close_icon(hdc: HDC, bounds: &RECT, background_color: u32) {
-    const ICON_SIZE: i32 = 19;
+unsafe fn draw_close_icon(hdc: HDC, bounds: &RECT, background_color: u32, scale: f32) {
     const SAMPLES: i32 = 4;
     const INSET: f32 = 3.5;
     const STROKE_RADIUS: f32 = 2.15;
 
-    let left = bounds.left + ((bounds.right - bounds.left) - ICON_SIZE) / 2;
-    let top = bounds.top + ((bounds.bottom - bounds.top) - ICON_SIZE) / 2;
-    let max = ICON_SIZE as f32 - INSET;
+    let icon_size = scaled_len(19, scale).max(8);
+    let inset = INSET * scale;
+    let stroke_radius = STROKE_RADIUS * scale;
+    let left = bounds.left + ((bounds.right - bounds.left) - icon_size) / 2;
+    let top = bounds.top + ((bounds.bottom - bounds.top) - icon_size) / 2;
+    let max = icon_size as f32 - inset;
     let sample_count = (SAMPLES * SAMPLES) as f32;
 
-    for y in 0..ICON_SIZE {
-        for x in 0..ICON_SIZE {
+    for y in 0..icon_size {
+        for x in 0..icon_size {
             let mut coverage = 0;
             for sample_y in 0..SAMPLES {
                 for sample_x in 0..SAMPLES {
                     let px = x as f32 + (sample_x as f32 + 0.5) / SAMPLES as f32;
                     let py = y as f32 + (sample_y as f32 + 0.5) / SAMPLES as f32;
-                    let down = distance_to_segment(px, py, INSET, INSET, max, max);
-                    let up = distance_to_segment(px, py, max, INSET, INSET, max);
-                    if down.min(up) <= STROKE_RADIUS {
+                    let down = distance_to_segment(px, py, inset, inset, max, max);
+                    let up = distance_to_segment(px, py, max, inset, inset, max);
+                    if down.min(up) <= stroke_radius {
                         coverage += 1;
                     }
                 }
@@ -2524,14 +2744,6 @@ unsafe fn state_from_hwnd(hwnd: HWND) -> Option<&'static mut GuiState> {
     ptr.as_mut()
 }
 
-unsafe fn parent_state_from_child(hwnd: HWND) -> Option<&'static mut GuiState> {
-    let parent = windows_sys::Win32::UI::WindowsAndMessaging::GetParent(hwnd);
-    if parent.is_null() {
-        return None;
-    }
-    state_from_hwnd(parent)
-}
-
 unsafe fn set_status(hwnd: HWND, text: &str) {
     if !is_version_status(text) {
         InvalidateRect(hwnd, null(), 0);
@@ -2550,15 +2762,7 @@ fn is_version_status(text: &str) -> bool {
 }
 
 unsafe fn invalidate_run_controls(parent: HWND) {
-    invalidate_control(parent, ID_RUN);
-    invalidate_control(parent, ID_STEP);
-}
-
-unsafe fn invalidate_control(parent: HWND, id: i32) {
-    let control = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(parent, id);
-    if !control.is_null() {
-        InvalidateRect(control, null(), 1);
-    }
+    InvalidateRect(parent, null(), 0);
 }
 
 unsafe fn get_control_text(parent: HWND, id: i32) -> String {
