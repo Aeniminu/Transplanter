@@ -2,7 +2,7 @@
 
 ※現在は、Windows専用です。
 
-Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampowered.com/app/2060160/_Replace/?l=japanese) で、Pythonだけでなく別の言語でもプログラミング学習を楽しむための非公式変換アプリです。
+Transplanterは、Steamゲーム [農家は Replace() されました](https://store.steampowered.com/app/2060160/_Replace/?l=japanese) で、Pythonだけでなく別の言語でもプログラミング学習を楽しむための非公式変換アプリです。
 
 現在入っている変換器は次の2つです。
 
@@ -11,28 +11,26 @@ Transplanterは、Steamゲーム [The Farmer Was Replaced](https://store.steampo
 
 今後も変換器を増やしていく予定です。お楽しみに。
 
-Transplanterはゲーム内でRustやLispを直接実行するものではありません。あなたが書いたコードを、ゲームが読める `.py` に変換して Save フォルダへ届けます。
-
 ## 入手と初回セットアップ
 
 Transplanterは、CursorやVS CodeなどのIDEでコードを書き、ゲーム側のファイルウォッチャーで反映する遊び方を想定しています。
 
-まず、ゲーム側で外部エディタを使える状態にします。
+そのためまずは、ゲーム側で外部エディタを使える状態にします。
 
-1. The Farmer Was Replaced を起動します。
+1. [農家は Replace() されました](https://store.steampowered.com/app/2060160/_Replace/?l=japanese) を起動します。
 2. `設定 / ファイルウォッチャー` を有効にします。
 3. `Load` メニューを開きます。
 4. 使いたいセーブを選びます。
 5. `Open Folder` を押して、ゲームの Save フォルダを開きます。
 
-次に、Transplanterを置きます。
+次に、Transplanterを導入する作業です。
 
 1. `C:\Users\YourName\Desktop\farming` のような、好きな作業フォルダを作ります。
 2. [GitHub Releases](https://github.com/Aeniminu/Transplanter/releases) の最新リリースを開きます。
 3. `Assets` から `Transplanter.exe` をダウンロードし、その作業フォルダへ置きます。
 4. `Transplanter.exe` をダブルクリックします。
-5. 初回起動で必要なファイルが自動作成されます。
-6. ウィンドウ上段の `ソースフォルダ` が、作業フォルダ内の `rs_src` を指していることを確認します。
+5. (自動)初回起動で必要なファイルが自動作成されます。
+6. (自動)ウィンドウ上段の `ソースフォルダ` が、作業フォルダ内の `rs_src` を指していることを確認します。
 7. ウィンドウ下段の `ゲームの Save フォルダ` に、さきほどゲームから開いた Save フォルダを指定します。
 8. 自動生成されている `rs_src/main.rs` を編集して保存します。
 
@@ -51,7 +49,7 @@ Saves/Save1
 
 ## どう動くか
 
-作業フォルダの中で書いたコードが、ゲームの Save フォルダへ `.py` として出力されます。
+下の図のように、作業フォルダの中で書いたコードが、ゲームの Save フォルダへ `.py` として出力される単純な仕組みです。
 
 ```text
 好きな作業フォルダ/
