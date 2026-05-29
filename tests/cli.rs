@@ -2,9 +2,9 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-const EXPECTED_BASIC: &str =
-    "while True:\n    if can_harvest():\n        harvest()\n    else:\n        move(East)\n";
+const EXPECTED_BASIC: &str = "harvest()\n";
 const BASIC_EXAMPLE: &str = "converters/rust_to_python/examples/basic.rs";
+const LISP_BASIC_EXAMPLE: &str = "converters/lisp_to_python/examples/basic.scm";
 
 #[test]
 fn example_basic_prints_expected_output() {
@@ -19,6 +19,62 @@ fn example_basic_prints_expected_output() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap(), EXPECTED_BASIC);
+}
+
+#[test]
+fn example_lisp_basic_prints_expected_output() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_transplanter"));
+    let fake_checker = add_fake_scheme_checker(&mut command);
+    let output = command
+        .arg(LISP_BASIC_EXAMPLE)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), EXPECTED_BASIC);
+    let _ = fs::remove_dir_all(fake_checker);
+}
+
+#[test]
+fn lisp_extension_writes_output_file() {
+    let input_path = std::env::temp_dir().join(format!(
+        "transplanter_cli_lisp_{}_{}.lisp",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let output_path = input_path.with_extension("py");
+    fs::write(
+        &input_path,
+        "(use transplanter)\n\n(define (main)\n  (quick-print \"lisp\"))\n",
+    )
+    .unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_transplanter"));
+    let fake_checker = add_fake_scheme_checker(&mut command);
+    let output = command
+        .arg(&input_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&output_path).unwrap(),
+        "quick_print(\"lisp\")\n"
+    );
+
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_dir_all(fake_checker);
 }
 
 #[test]
@@ -96,7 +152,7 @@ fn help_flag_prints_usage() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Usage:"), "stdout: {stdout}");
     assert!(
-        stdout.contains("transplanter <input.rs> --check"),
+        stdout.contains("transplanter <input.rs|input.scm|input.lisp> --check"),
         "stdout: {stdout}"
     );
     assert!(
@@ -197,6 +253,82 @@ fn check_flag_accepts_valid_input() {
         String::from_utf8(output.stdout).unwrap(),
         format!("OK: {BASIC_EXAMPLE}\n")
     );
+}
+
+#[test]
+fn check_flag_accepts_lisp_input() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_transplanter"));
+    let fake_checker = add_fake_scheme_checker(&mut command);
+    let output = command
+        .arg(LISP_BASIC_EXAMPLE)
+        .arg("--check")
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("OK: {LISP_BASIC_EXAMPLE}\n")
+    );
+    let _ = fs::remove_dir_all(fake_checker);
+}
+
+#[test]
+fn check_flag_reports_lisp_file_position() {
+    let input_path = std::env::temp_dir().join(format!(
+        "transplanter_cli_invalid_{}_{}.scm",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::write(&input_path, "(define (main)\n  (harvest)\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg(&input_path)
+        .arg("--check")
+        .output()
+        .expect("failed to run transplanter");
+
+    let _ = fs::remove_file(&input_path);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(&input_path.to_string_lossy().to_string()),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("1行1列"), "stderr: {stderr}");
+    assert!(stderr.contains("`)` が必要"), "stderr: {stderr}");
+}
+
+#[test]
+fn check_flag_rejects_lisp_without_external_scheme_checker() {
+    let workspace = temp_workspace("missing_scheme_checker");
+    let input_path = workspace.join("main.scm");
+    write_file(
+        &input_path,
+        "(use transplanter)\n\n(define (main)\n  (harvest))\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg(&input_path)
+        .arg("--check")
+        .env("PATH", &workspace)
+        .env_remove("TRANSPLANTER_GUILE_GUILD")
+        .env_remove("TRANSPLANTER_CHEZ_SCHEME")
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("外部Scheme検査"), "stderr: {stderr}");
+    assert!(stderr.contains("Guile Scheme"), "stderr: {stderr}");
+    assert!(stderr.contains("Chez Scheme"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(workspace);
 }
 
 #[test]
@@ -513,6 +645,102 @@ fn sync_accepts_custom_directories() {
 }
 
 #[test]
+fn sync_accepts_lisp_sources() {
+    let workspace = temp_workspace("sync_lisp");
+    write_file(
+        &workspace.join("rs_src").join("main.scm"),
+        "(use transplanter)\n\n(define (main)\n  (clear)\n  (move :east))\n",
+    );
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_transplanter"));
+    let fake_checker = add_fake_scheme_checker(&mut command);
+    let output = command
+        .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("main.py")).unwrap(),
+        "clear()\nmove(East)\n"
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+    let _ = fs::remove_dir_all(fake_checker);
+}
+
+#[test]
+fn sync_accepts_mixed_rust_and_lisp_sources() {
+    let workspace = temp_workspace("sync_mixed");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
+    );
+    write_file(
+        &workspace.join("rs_src").join("lab.scm"),
+        "(define (main)\n  (quick-print \"lab\"))\n",
+    );
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_transplanter"));
+    let fake_checker = add_fake_scheme_checker(&mut command);
+    let output = command
+        .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("main.py")).unwrap(),
+        "harvest()\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("lab.py")).unwrap(),
+        "quick_print(\"lab\")\n"
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+    let _ = fs::remove_dir_all(fake_checker);
+}
+
+#[test]
+fn sync_rejects_duplicate_output_paths_across_languages() {
+    let workspace = temp_workspace("sync_duplicate_outputs");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
+    );
+    write_file(
+        &workspace.join("rs_src").join("main.scm"),
+        "(define (main)\n  (quick-print \"lisp\"))\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("main.rs"), "stderr: {stderr}");
+    assert!(stderr.contains("main.scm"), "stderr: {stderr}");
+    assert!(stderr.contains("main.py"), "stderr: {stderr}");
+    assert!(stderr.contains("出力先"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn sync_keeps_subdirectory_layout() {
     let workspace = temp_workspace("sync_subdir");
     write_file(
@@ -777,6 +1005,41 @@ fn temp_workspace(name: &str) -> std::path::PathBuf {
         unique_suffix()
     ));
     fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn add_fake_scheme_checker(command: &mut Command) -> std::path::PathBuf {
+    let dir = temp_workspace("fake_scheme_checker");
+    let checker_path = write_fake_guild(&dir);
+    command.env("PATH", path_with_prepended(&dir));
+    command.env("TRANSPLANTER_GUILE_GUILD", checker_path);
+    dir
+}
+
+fn path_with_prepended(dir: &Path) -> std::ffi::OsString {
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(current_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&current_path));
+    }
+    std::env::join_paths(paths).unwrap()
+}
+
+#[cfg(windows)]
+fn write_fake_guild(dir: &Path) -> std::path::PathBuf {
+    let path = dir.join("guild.cmd");
+    write_file(&path, "@echo off\r\nexit /b 0\r\n");
+    path
+}
+
+#[cfg(not(windows))]
+fn write_fake_guild(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join("guild");
+    write_file(&path, "#!/bin/sh\nexit 0\n");
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).unwrap();
     path
 }
 

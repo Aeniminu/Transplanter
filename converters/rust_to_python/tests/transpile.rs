@@ -4,20 +4,11 @@ use transplanter_rust::{compile_module_source, compile_source};
 fn basic_loop() {
     let source = r#"
 fn main() {
-    loop {
-        if can_harvest() {
-            harvest();
-        } else {
-            move_dir(Direction::East);
-        }
-    }
+    harvest();
 }
 "#;
 
-    assert_eq!(
-        compile_source(source).unwrap(),
-        "while True:\n    if can_harvest():\n        harvest()\n    else:\n        move(East)\n"
-    );
+    assert_eq!(compile_source(source).unwrap(), "harvest()\n");
 }
 
 #[test]

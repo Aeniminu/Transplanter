@@ -52,13 +52,7 @@ const CONFIG_FILE_NAME: &str = "transplanter.toml";
 const DEFAULT_MAIN_RS: &str = r#"use transplanter_rust::prelude::*;
 
 fn main() {
-    loop {
-        if can_harvest() {
-            harvest();
-        } else {
-            move_dir(Direction::East);
-        }
-    }
+    harvest();
 }
 "#;
 
@@ -462,7 +456,7 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
     create_control(
         hwnd,
         "STATIC",
-        "rs_src のパス",
+        "ソースフォルダ",
         WS_CHILD | WS_VISIBLE,
         ControlRect::new(20, 60, 180, 20),
         ID_SRC_LABEL,
@@ -896,7 +890,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
     if !src_dir.is_dir() {
         stop_watcher(state);
         state.active = false;
-        set_status(hwnd, "エラー: rs_src が見つかりません");
+        set_status(hwnd, "エラー: ソースフォルダが見つかりません");
         InvalidateRect(hwnd, null(), 0);
         return;
     }
@@ -1423,7 +1417,7 @@ mod tests {
         assert!(
             fs::read_to_string(workspace.join("rs_src").join("main.rs"))
                 .unwrap()
-                .contains("move_dir(Direction::East);")
+                .contains("harvest();")
         );
         assert!(workspace.join("Cargo.toml").is_file());
         assert!(!workspace.join("rs_src").join("Cargo.toml").exists());

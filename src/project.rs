@@ -5,8 +5,10 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use crate::ide_support::write_manifest;
+use crate::lisp_check::validate_lisp_file;
 use crate::paths::{
-    display_path, ensure_source_dir, format_compile_error, is_rs_file, should_skip_source_dir,
+    display_path, ensure_source_dir, format_compile_error, is_lisp_file, is_rs_file,
+    is_source_file, should_skip_source_dir,
 };
 use crate::rust_check::validate_project;
 use crate::rust_modules::discover_module_files;
@@ -29,7 +31,9 @@ pub fn sync_project(src_dir: &Path, out_dir: &Path) -> Result<usize, String> {
     })?;
 
     let files = find_source_files(src_dir)?;
-    let module_files = discover_module_files(&files)?;
+    ensure_unique_output_paths(src_dir, out_dir, &files)?;
+    let rs_files = rust_source_files(&files);
+    let module_files = discover_module_files(&rs_files)?;
     for input_path in &files {
         check_project_file(input_path, module_files.contains(input_path))?;
     }
@@ -54,7 +58,7 @@ pub fn watch_project(src_dir: &Path, out_dir: &Path) -> Result<(), String> {
         display_path(src_dir),
         display_path(out_dir)
     );
-    println!("watch: .rs の変更を監視しています。終了するには Ctrl+C を押してください。");
+    println!("watch: ソースファイルの変更を監視しています。終了するには Ctrl+C を押してください。");
 
     let mut seen = snapshot_source_files(src_dir)?;
     let mut seen_outputs = snapshot_output_files(src_dir, out_dir, seen.keys())?;
@@ -99,11 +103,16 @@ pub fn compile_project_file(
     input_path: &Path,
 ) -> Result<PathBuf, String> {
     let files = find_source_files(src_dir)?;
-    let module_files = discover_module_files(&files)?;
+    ensure_unique_output_paths(src_dir, out_dir, &files)?;
+    let rs_files = rust_source_files(&files);
+    let module_files = discover_module_files(&rs_files)?;
     let output = compile_project_source(input_path, module_files.contains(input_path))?;
 
     if is_rs_file(input_path) {
         validate_project(src_dir)?;
+    }
+    if is_lisp_file(input_path) {
+        validate_lisp_file(input_path)?;
     }
 
     write_project_output(src_dir, out_dir, input_path, output)
@@ -164,22 +173,43 @@ fn compile_project_file_unchecked(
 
 fn check_project_file(input_path: &Path, is_module: bool) -> Result<(), String> {
     let source = read_project_source(input_path)?;
-    if is_module {
-        transplanter::check_module_source(&source)
-    } else {
-        transplanter::check_source(&source)
+    if is_rs_file(input_path) {
+        return if is_module {
+            transplanter::check_module_source(&source)
+        } else {
+            transplanter::check_source(&source)
+        }
+        .map_err(|err| format_compile_error(input_path, err));
     }
-    .map_err(|err| format_compile_error(input_path, err))
+    if is_lisp_file(input_path) {
+        transplanter::check_lisp_source(&source)
+            .map_err(|err| format_compile_error(input_path, err))?;
+        return validate_lisp_file(input_path);
+    }
+    Err(format!(
+        "エラー: `{}` は対応している入力ファイルではありません",
+        display_path(input_path)
+    ))
 }
 
 fn compile_project_source(input_path: &Path, is_module: bool) -> Result<String, String> {
     let source = read_project_source(input_path)?;
-    if is_module {
-        transplanter::compile_module_source(&source)
-    } else {
-        transplanter::compile_source(&source)
+    if is_rs_file(input_path) {
+        return if is_module {
+            transplanter::compile_module_source(&source)
+        } else {
+            transplanter::compile_source(&source)
+        }
+        .map_err(|err| format_compile_error(input_path, err));
     }
-    .map_err(|err| format_compile_error(input_path, err))
+    if is_lisp_file(input_path) {
+        return transplanter::compile_lisp_source(&source)
+            .map_err(|err| format_compile_error(input_path, err));
+    }
+    Err(format!(
+        "エラー: `{}` は対応している入力ファイルではありません",
+        display_path(input_path)
+    ))
 }
 
 fn read_project_source(input_path: &Path) -> Result<String, String> {
@@ -212,6 +242,26 @@ fn write_project_output(
     })?;
 
     Ok(output_path)
+}
+
+fn ensure_unique_output_paths(
+    src_dir: &Path,
+    out_dir: &Path,
+    files: &[PathBuf],
+) -> Result<(), String> {
+    let mut outputs = BTreeMap::new();
+    for input_path in files {
+        let output_path = output_path_for(src_dir, out_dir, input_path)?;
+        if let Some(previous) = outputs.insert(output_path.clone(), input_path.clone()) {
+            return Err(format!(
+                "エラー: `{}` と `{}` の出力先がどちらも `{}` になります。どちらかのファイル名を変更してください",
+                display_path(&previous),
+                display_path(input_path),
+                display_path(&output_path)
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn file_stamp(path: &Path) -> Result<FileStamp, String> {
@@ -247,10 +297,18 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Stri
 
         if metadata.is_dir() && !should_skip_source_dir(&path) {
             collect_source_files(&path, files)?;
-        } else if metadata.is_file() && is_rs_file(&path) {
+        } else if metadata.is_file() && is_source_file(&path) {
             files.push(path);
         }
     }
 
     Ok(())
+}
+
+fn rust_source_files(files: &[PathBuf]) -> Vec<PathBuf> {
+    files
+        .iter()
+        .filter(|path| is_rs_file(path))
+        .cloned()
+        .collect()
 }

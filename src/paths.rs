@@ -11,13 +11,47 @@ pub fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-pub fn format_compile_error(path: &Path, err: transplanter::error::RustToPythonError) -> String {
+pub trait CompileDiagnostic {
+    fn line(&self) -> usize;
+    fn column(&self) -> usize;
+    fn message(&self) -> &str;
+}
+
+impl CompileDiagnostic for transplanter::error::RustToPythonError {
+    fn line(&self) -> usize {
+        self.line
+    }
+
+    fn column(&self) -> usize {
+        self.column
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl CompileDiagnostic for transplanter::error::LispToPythonError {
+    fn line(&self) -> usize {
+        self.line
+    }
+
+    fn column(&self) -> usize {
+        self.column
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+pub fn format_compile_error(path: &Path, err: impl CompileDiagnostic) -> String {
     format!(
         "エラー: {}:{}行{}列: {}",
         display_path(path),
-        err.line,
-        err.column,
-        err.message
+        err.line(),
+        err.column(),
+        err.message()
     )
 }
 
@@ -64,7 +98,21 @@ pub fn toml_string(value: &str) -> String {
 }
 
 pub fn is_rs_file(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext == "rs")
+    has_extension(path, "rs")
+}
+
+pub fn is_lisp_file(path: &Path) -> bool {
+    has_extension(path, "scm") || has_extension(path, "lisp")
+}
+
+pub fn is_source_file(path: &Path) -> bool {
+    is_rs_file(path) || is_lisp_file(path)
+}
+
+fn has_extension(path: &Path, expected: &str) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(expected))
 }
 
 pub fn should_skip_source_dir(path: &Path) -> bool {

@@ -2,7 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::ide_support::write_manifest;
-use crate::paths::{DEFAULT_OUT_DIR, DEFAULT_SRC_DIR, display_path, format_compile_error};
+use crate::lisp_check::validate_lisp_file;
+use crate::paths::{
+    DEFAULT_OUT_DIR, DEFAULT_SRC_DIR, display_path, format_compile_error, is_lisp_file, is_rs_file,
+};
 use crate::project::{sync_project, watch_project};
 use crate::rust_check::validate_single_file;
 
@@ -224,15 +227,14 @@ fn run_single_file_mode(cli: &Cli) -> Result<(), String> {
     })?;
 
     if cli.check_only {
-        transplanter::check_source(&source).map_err(|err| format_compile_error(input_path, err))?;
-        validate_single_file(input_path)?;
+        check_single_source(input_path, &source)?;
+        validate_source_file(input_path)?;
         println!("OK: {}", display_path(input_path));
         return Ok(());
     }
 
-    let output = transplanter::compile_source(&source)
-        .map_err(|err| format_compile_error(input_path, err))?;
-    validate_single_file(input_path)?;
+    let output = compile_single_source(input_path, &source)?;
+    validate_source_file(input_path)?;
 
     if let Some(output_path) = &cli.output_path {
         fs::write(output_path, output).map_err(|err| {
@@ -248,9 +250,44 @@ fn run_single_file_mode(cli: &Cli) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_source_file(input_path: &std::path::Path) -> Result<(), String> {
+    validate_single_file(input_path)?;
+    validate_lisp_file(input_path)
+}
+
+fn check_single_source(input_path: &std::path::Path, source: &str) -> Result<(), String> {
+    if is_rs_file(input_path) {
+        return transplanter::check_source(source)
+            .map_err(|err| format_compile_error(input_path, err));
+    }
+    if is_lisp_file(input_path) {
+        return transplanter::check_lisp_source(source)
+            .map_err(|err| format_compile_error(input_path, err));
+    }
+    Err(format!(
+        "エラー: `{}` は対応している入力ファイルではありません。`.rs`、`.scm`、`.lisp` を使ってください",
+        display_path(input_path)
+    ))
+}
+
+fn compile_single_source(input_path: &std::path::Path, source: &str) -> Result<String, String> {
+    if is_rs_file(input_path) {
+        return transplanter::compile_source(source)
+            .map_err(|err| format_compile_error(input_path, err));
+    }
+    if is_lisp_file(input_path) {
+        return transplanter::compile_lisp_source(source)
+            .map_err(|err| format_compile_error(input_path, err));
+    }
+    Err(format!(
+        "エラー: `{}` は対応している入力ファイルではありません。`.rs`、`.scm`、`.lisp` を使ってください",
+        display_path(input_path)
+    ))
+}
+
 fn print_usage() {
     println!(
-        "Transplanter (耕訳機)\n\nUsage:\n  transplanter <input.rs>\n  transplanter <input.rs> -o <output.py>\n  transplanter <input.rs> --check\n  transplanter --init-ide [--src rs_src]\n  transplanter --sync [--src rs_src] [--out py_src]\n  transplanter --watch [--src rs_src] [--out py_src]\n  transplanter --version"
+        "Transplanter (耕訳機)\n\nUsage:\n  transplanter <input.rs|input.scm|input.lisp>\n  transplanter <input.rs|input.scm|input.lisp> -o <output.py>\n  transplanter <input.rs|input.scm|input.lisp> --check\n  transplanter --init-ide [--src rs_src]\n  transplanter --sync [--src rs_src] [--out py_src]\n  transplanter --watch [--src rs_src] [--out py_src]\n  transplanter --version"
     );
 }
 
