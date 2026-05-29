@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::ide_support::write_manifest;
 use crate::language::LanguageMode;
-use crate::paths::{display_path, should_skip_source_dir};
+use crate::paths::{DEFAULT_SRC_DIR, display_path, should_skip_source_dir};
 use crate::project::{
     FileStamp, compile_project_file, output_path_for, snapshot_output_files, snapshot_source_files,
     sync_project,
@@ -29,12 +29,13 @@ use windows::Win32::UI::Shell::{
 use windows::core::PCWSTR;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateRoundRectRgn,
-    CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_LEFT, DT_SINGLELINE,
-    DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FillRect, HBRUSH, HDC,
-    HFONT, HPEN, IntersectClipRect, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_NULL,
-    RestoreDC, RoundRect, SaveDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetPixel,
-    SetTextColor, SetWindowRgn, TRANSPARENT, UpdateWindow,
+    BeginPaint, BitBlt, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap,
+    CreateCompatibleDC, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush,
+    DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteDC,
+    DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FillRect, HBRUSH, HDC, HFONT, HPEN,
+    IntersectClipRect, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_NULL, RestoreDC,
+    RoundRect, SRCCOPY, SaveDC, ScreenToClient, SelectClipRgn, SelectObject, SetBkColor, SetBkMode,
+    SetPixel, SetTextColor, SetWindowRgn, TRANSPARENT, UpdateWindow,
 };
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Console::FreeConsole;
@@ -48,11 +49,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MB_ICONERROR, MB_ICONINFORMATION, MB_YESNO, MINMAXINFO, MSG, MessageBoxW, MoveWindow,
     PostQuitMessage, RegisterClassW, SW_MINIMIZE, SW_SHOW, SendMessageW, SetTimer,
     SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND,
-    WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ENTERSIZEMOVE,
-    WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_SIZE, WM_SIZING, WM_TIMER,
-    WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_TOPLEFT, WMSZ_TOPRIGHT, WNDCLASSW, WS_CHILD,
-    WS_CLIPCHILDREN, WS_POPUP,
+    WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_NCHITTEST,
+    WM_PAINT, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_POPUP,
 };
 
 const CLASS_NAME: &str = "transplanter_window";
@@ -86,10 +85,8 @@ const TIMER_ID: usize = 1;
 const TIMER_INTERVAL_MS: u32 = 250;
 const WINDOW_WIDTH: i32 = 704;
 const WINDOW_HEIGHT: i32 = 620;
-const MIN_WINDOW_WIDTH: i32 = 520;
-const MIN_WINDOW_HEIGHT: i32 = 460;
-const UI_SCALE_MIN: f32 = 0.75;
-const UI_SCALE_MAX: f32 = 1.75;
+const MIN_WINDOW_WIDTH: i32 = 220;
+const MIN_WINDOW_HEIGHT: i32 = 160;
 const TITLE_HEIGHT: i32 = 66;
 const EDITOR_LEFT: i32 = 14;
 const EDITOR_TOP: i32 = 66;
@@ -219,10 +216,14 @@ struct Theme {
     icon: HBRUSH,
     no_outline: HPEN,
     font: HFONT,
+    title_font: HFONT,
+    code_font: HFONT,
+    code_hover_font: HFONT,
 }
 
 impl Theme {
     unsafe fn new() -> Self {
+        let ui_font_name = wide("Yu Gothic UI");
         let code_font_name = wide("Cascadia Mono");
         Self {
             background: CreateSolidBrush(COLOR_BACKGROUND),
@@ -256,53 +257,56 @@ impl Theme {
                 (DEFAULT_PITCH | FF_DONTCARE) as u32,
                 code_font_name.as_ptr(),
             ),
+            title_font: CreateFontW(
+                -22,
+                0,
+                0,
+                0,
+                FW_BOLD as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                code_font_name.as_ptr(),
+            ),
+            code_font: CreateFontW(
+                -20,
+                0,
+                0,
+                0,
+                FW_BOLD as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                ui_font_name.as_ptr(),
+            ),
+            code_hover_font: CreateFontW(
+                -22,
+                0,
+                0,
+                0,
+                FW_BOLD as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                ui_font_name.as_ptr(),
+            ),
         }
     }
-}
-
-#[derive(Clone, Copy)]
-struct RenderFonts {
-    title: HFONT,
-    code: HFONT,
-    code_hover: HFONT,
-}
-
-impl RenderFonts {
-    unsafe fn new(scale: f32) -> Self {
-        let ui_font_name = wide("Yu Gothic UI");
-        let code_font_name = wide("Cascadia Mono");
-        Self {
-            title: create_scaled_font(-22, scale, code_font_name.as_ptr()),
-            code: create_scaled_font(-20, scale, ui_font_name.as_ptr()),
-            code_hover: create_scaled_font(-22, scale, ui_font_name.as_ptr()),
-        }
-    }
-
-    unsafe fn delete(self) {
-        DeleteObject(self.title as _);
-        DeleteObject(self.code as _);
-        DeleteObject(self.code_hover as _);
-    }
-}
-
-unsafe fn create_scaled_font(base_height: i32, scale: f32, name: *const u16) -> HFONT {
-    let height = -((base_height.abs() as f32 * scale).round().max(1.0) as i32);
-    CreateFontW(
-        height,
-        0,
-        0,
-        0,
-        FW_BOLD as i32,
-        0,
-        0,
-        0,
-        DEFAULT_CHARSET as u32,
-        OUT_DEFAULT_PRECIS as u32,
-        CLIP_DEFAULT_PRECIS as u32,
-        CLEARTYPE_QUALITY as u32,
-        (DEFAULT_PITCH | FF_DONTCARE) as u32,
-        name,
-    )
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -331,8 +335,6 @@ struct GuiState {
     horizontal_scroll: i32,
     horizontal_scroll_metrics: Option<HorizontalScrollMetrics>,
     horizontal_scroll_drag: Option<HorizontalScrollDrag>,
-    resize_mode: Option<ResizeMode>,
-    ui_scale: f32,
     update_check_started: bool,
     update_busy: bool,
     update: Option<ReleaseInfo>,
@@ -352,12 +354,6 @@ enum TitleButton {
     Step,
     Minimize,
     Close,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ResizeMode {
-    Edge,
-    Corner,
 }
 
 struct WatchHandle {
@@ -400,20 +396,18 @@ impl ControlRect {
 struct WindowLayout {
     width: i32,
     height: i32,
-    scale: f32,
 }
 
 impl WindowLayout {
-    fn new(width: i32, height: i32, scale: f32) -> Self {
+    fn new(width: i32, height: i32) -> Self {
         Self {
             width: width.max(MIN_WINDOW_WIDTH),
             height: height.max(MIN_WINDOW_HEIGHT),
-            scale: scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX),
         }
     }
 
     fn s(self, value: i32) -> i32 {
-        scaled_len(value, self.scale)
+        value
     }
 
     fn title_height(self) -> i32 {
@@ -437,11 +431,11 @@ impl WindowLayout {
     }
 
     fn code_right(self) -> i32 {
-        self.editor_right() - self.s(28)
+        self.editor_right() - self.s(8)
     }
 
     fn value_right(self) -> i32 {
-        self.editor_right() - self.s(36)
+        self.code_right()
     }
 
     fn content_left(self) -> i32 {
@@ -469,7 +463,7 @@ impl WindowLayout {
     }
 
     fn icon_scale(self) -> i32 {
-        ((2.0 * self.scale).round() as i32).max(1)
+        2
     }
 
     fn title_button(self, button: TitleButton) -> ControlRect {
@@ -488,10 +482,6 @@ impl WindowLayout {
     fn hidden_value_width(self, left: i32) -> i32 {
         (self.value_right() - self.s(left)).max(1)
     }
-}
-
-fn scaled_len(value: i32, scale: f32) -> i32 {
-    ((value as f32) * scale).round() as i32
 }
 
 #[derive(Clone, Copy)]
@@ -522,7 +512,6 @@ struct CodeText<'a> {
 #[derive(Clone, Copy)]
 struct CodeRender {
     layout: WindowLayout,
-    fonts: RenderFonts,
     scroll_x: i32,
 }
 
@@ -580,7 +569,7 @@ unsafe fn run_window() -> Result<(), String> {
         0,
         class_name.as_ptr(),
         title.as_ptr(),
-        WS_POPUP | WS_CLIPCHILDREN,
+        WS_POPUP,
         i32::MIN,
         i32::MIN,
         WINDOW_WIDTH,
@@ -632,8 +621,6 @@ impl GuiState {
             horizontal_scroll: 0,
             horizontal_scroll_metrics: None,
             horizontal_scroll_drag: None,
-            resize_mode: None,
-            ui_scale: 1.0,
             update_check_started: false,
             update_busy: false,
             update: None,
@@ -673,22 +660,6 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_SIZE => {
             handle_window_size(hwnd);
-            0
-        }
-        WM_ENTERSIZEMOVE => {
-            if let Some(state) = state_from_hwnd(hwnd) {
-                state.resize_mode = None;
-            }
-            0
-        }
-        WM_SIZING => {
-            update_resize_mode(hwnd, wparam as u32);
-            1
-        }
-        WM_EXITSIZEMOVE => {
-            if let Some(state) = state_from_hwnd(hwnd) {
-                state.resize_mode = None;
-            }
             0
         }
         WM_GETMINMAXINFO => {
@@ -883,13 +854,10 @@ unsafe fn create_control(
 
 unsafe fn layout_for_hwnd(hwnd: HWND) -> WindowLayout {
     let mut rect: RECT = std::mem::zeroed();
-    let scale = state_from_hwnd(hwnd)
-        .map(|state| state.ui_scale)
-        .unwrap_or(1.0);
     if GetClientRect(hwnd, &mut rect) == 0 {
-        return WindowLayout::new(WINDOW_WIDTH, WINDOW_HEIGHT, scale);
+        return WindowLayout::new(WINDOW_WIDTH, WINDOW_HEIGHT);
     }
-    WindowLayout::new(rect.right - rect.left, rect.bottom - rect.top, scale)
+    WindowLayout::new(rect.right - rect.left, rect.bottom - rect.top)
 }
 
 unsafe fn layout_controls(hwnd: HWND) {
@@ -917,45 +885,15 @@ unsafe fn layout_controls(hwnd: HWND) {
 }
 
 unsafe fn handle_window_size(hwnd: HWND) {
-    update_ui_scale_for_resize(hwnd);
     update_window_region(hwnd);
     layout_controls(hwnd);
-    InvalidateRect(hwnd, null(), 1);
-}
-
-unsafe fn update_resize_mode(hwnd: HWND, edge: u32) {
-    if let Some(state) = state_from_hwnd(hwnd) {
-        state.resize_mode = Some(match edge {
-            WMSZ_TOPLEFT | WMSZ_TOPRIGHT | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT => ResizeMode::Corner,
-            _ => ResizeMode::Edge,
-        });
-    }
-}
-
-unsafe fn update_ui_scale_for_resize(hwnd: HWND) {
-    let Some(state) = state_from_hwnd(hwnd) else {
-        return;
-    };
-    if state.resize_mode != Some(ResizeMode::Corner) {
-        return;
-    }
-
-    let mut rect: RECT = std::mem::zeroed();
-    if GetClientRect(hwnd, &mut rect) == 0 {
-        return;
-    }
-
-    let width_scale = (rect.right - rect.left) as f32 / WINDOW_WIDTH as f32;
-    let height_scale = (rect.bottom - rect.top) as f32 / WINDOW_HEIGHT as f32;
-    state.ui_scale = width_scale
-        .min(height_scale)
-        .clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+    InvalidateRect(hwnd, null(), 0);
 }
 
 unsafe fn move_control(parent: HWND, id: i32, bounds: ControlRect) {
     let control = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(parent, id);
     if !control.is_null() {
-        MoveWindow(control, bounds.x, bounds.y, bounds.width, bounds.height, 1);
+        MoveWindow(control, bounds.x, bounds.y, bounds.width, bounds.height, 0);
     }
 }
 
@@ -964,7 +902,7 @@ unsafe fn update_window_region(hwnd: HWND) {
     let radius = layout.s(10).max(1);
     let rounded = CreateRoundRectRgn(0, 0, layout.width + 1, layout.height + 1, radius, radius);
     if !rounded.is_null() {
-        SetWindowRgn(hwnd, rounded, 1);
+        SetWindowRgn(hwnd, rounded, 0);
     }
 }
 
@@ -976,8 +914,24 @@ unsafe fn set_min_window_size(lparam: LPARAM) {
 
 unsafe fn paint_window(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
-    let hdc = BeginPaint(hwnd, &mut ps);
+    let screen_hdc = BeginPaint(hwnd, &mut ps);
     let layout = layout_for_hwnd(hwnd);
+    let buffer_dc = CreateCompatibleDC(screen_hdc);
+    let buffer_bitmap = if !buffer_dc.is_null() {
+        CreateCompatibleBitmap(screen_hdc, layout.width, layout.height)
+    } else {
+        null_mut()
+    };
+    let old_buffer_bitmap = if !buffer_dc.is_null() && !buffer_bitmap.is_null() {
+        SelectObject(buffer_dc, buffer_bitmap as _)
+    } else {
+        null_mut()
+    };
+    let hdc = if !buffer_dc.is_null() && !buffer_bitmap.is_null() {
+        buffer_dc
+    } else {
+        screen_hdc
+    };
     let (
         src_text,
         out_text,
@@ -1022,7 +976,6 @@ unsafe fn paint_window(hwnd: HWND) {
     let mut rendered_scroll = 0;
 
     with_theme(|theme| {
-        let fonts = RenderFonts::new(layout.scale);
         let paint_state = SaveDC(hdc);
         let code_text = CodeText {
             src: &src_text,
@@ -1033,7 +986,7 @@ unsafe fn paint_window(hwnd: HWND) {
             blink_on,
             update_available,
         };
-        let virtual_width = measure_code_content_width(hdc, fonts, code_text, layout);
+        let virtual_width = measure_code_content_width(hdc, theme, code_text, layout);
         rendered_scroll_metrics =
             horizontal_scroll_metrics(layout, virtual_width, requested_scroll.max(0));
         rendered_scroll = rendered_scroll_metrics
@@ -1041,7 +994,6 @@ unsafe fn paint_window(hwnd: HWND) {
             .unwrap_or(0);
         let render = CodeRender {
             layout,
-            fonts,
             scroll_x: rendered_scroll,
         };
 
@@ -1110,7 +1062,7 @@ unsafe fn paint_window(hwnd: HWND) {
             FillRect(hdc, &scrollbar, theme.scroll);
         }
 
-        draw_title_text(hdc, layout, fonts, "Transplanter");
+        draw_title_text(hdc, theme, layout, "Transplanter");
         let clip_state = SaveDC(hdc);
         IntersectClipRect(
             hdc,
@@ -1120,7 +1072,7 @@ unsafe fn paint_window(hwnd: HWND) {
             layout.editor_bottom(),
         );
         draw_import_line(hdc, theme, render);
-        draw_status_text(hdc, code_text, render);
+        draw_status_text(hdc, theme, code_text, render);
         draw_config_text(hdc, theme, code_text, render);
         RestoreDC(hdc, clip_state);
 
@@ -1128,8 +1080,29 @@ unsafe fn paint_window(hwnd: HWND) {
             draw_horizontal_scrollbar(hdc, theme, metrics);
         }
         RestoreDC(hdc, paint_state);
-        fonts.delete();
     });
+
+    if hdc != screen_hdc {
+        SelectClipRgn(screen_hdc, null_mut());
+        BitBlt(
+            screen_hdc,
+            0,
+            0,
+            layout.width,
+            layout.height,
+            hdc,
+            0,
+            0,
+            SRCCOPY,
+        );
+        if !old_buffer_bitmap.is_null() {
+            SelectObject(buffer_dc, old_buffer_bitmap);
+        }
+        DeleteObject(buffer_bitmap as _);
+        DeleteDC(buffer_dc);
+    } else if !buffer_dc.is_null() {
+        DeleteDC(buffer_dc);
+    }
 
     EndPaint(hwnd, &ps);
 
@@ -1185,7 +1158,7 @@ unsafe fn draw_title_button(
             background: ButtonBackground::Title,
         }
     };
-    let face_rect = draw_game_button_surface(hdc, &bounds, theme, surface, layout.scale);
+    let face_rect = draw_game_button_surface(hdc, &bounds, theme, surface);
 
     match button {
         TitleButton::Run => {
@@ -1211,20 +1184,24 @@ unsafe fn draw_title_button(
             } else {
                 COLOR_BUTTON
             };
-            draw_close_icon(hdc, &face_rect, icon_background, layout.scale);
+            draw_close_icon(hdc, &face_rect, icon_background);
         }
     }
 }
 
-unsafe fn draw_title_text(hdc: HDC, layout: WindowLayout, fonts: RenderFonts, text: &str) {
+unsafe fn draw_title_text(hdc: HDC, theme: &Theme, layout: WindowLayout, text: &str) {
     let mut rect = RECT {
         left: layout.s(124),
         top: layout.s(20),
         right: layout.width - layout.s(120),
         bottom: layout.s(56),
     };
+    if !rect_has_area(&rect) {
+        return;
+    }
+
     let text = wide(text);
-    SelectObject(hdc, fonts.title as _);
+    SelectObject(hdc, theme.title_font as _);
     SetBkMode(hdc, TRANSPARENT as i32);
     SetTextColor(hdc, COLOR_TEXT);
     DrawTextW(
@@ -1239,16 +1216,19 @@ unsafe fn draw_title_text(hdc: HDC, layout: WindowLayout, fonts: RenderFonts, te
 unsafe fn draw_config_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: CodeRender) {
     draw_assignment_line(
         hdc,
+        theme,
         render,
         AssignmentLine::src("src_dir", text.src, text.blink_on, text.hover_target),
     );
     draw_assignment_line(
         hdc,
+        theme,
         render,
         AssignmentLine::out("out_dir", text.out, text.blink_on, text.hover_target),
     );
     draw_assignment_line(
         hdc,
+        theme,
         render,
         AssignmentLine::language("language", text.language, text.blink_on, text.hover_target),
     );
@@ -1293,12 +1273,12 @@ unsafe fn draw_transplanter_call(hdc: HDC, theme: &Theme, render: CodeRender) {
 
 unsafe fn draw_code_segments(
     hdc: HDC,
-    _theme: &Theme,
+    theme: &Theme,
     render: CodeRender,
     top: i32,
     segments: &[(&str, u32)],
 ) {
-    SelectObject(hdc, render.fonts.code as _);
+    SelectObject(hdc, theme.code_font as _);
     SetBkMode(hdc, TRANSPARENT as i32);
 
     let top = render.layout.s(top);
@@ -1312,14 +1292,16 @@ unsafe fn draw_code_segments(
             right: render.layout.code_right(),
             bottom: top + row_height,
         };
-        SetTextColor(hdc, *color);
-        DrawTextW(
-            hdc,
-            text.as_ptr(),
-            -1,
-            &mut rect,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-        );
+        if rect_has_area(&rect) {
+            SetTextColor(hdc, *color);
+            DrawTextW(
+                hdc,
+                text.as_ptr(),
+                -1,
+                &mut rect,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+        }
 
         let mut measure = RECT {
             left: 0,
@@ -1398,8 +1380,13 @@ impl<'a> AssignmentLine<'a> {
     }
 }
 
-unsafe fn draw_assignment_line(hdc: HDC, render: CodeRender, line: AssignmentLine<'_>) {
-    SelectObject(hdc, render.fonts.code as _);
+unsafe fn draw_assignment_line(
+    hdc: HDC,
+    theme: &Theme,
+    render: CodeRender,
+    line: AssignmentLine<'_>,
+) {
+    SelectObject(hdc, theme.code_font as _);
     SetBkMode(hdc, TRANSPARENT as i32);
     let top = render.layout.s(line.top);
     let row_height = render.layout.text_row_height();
@@ -1414,14 +1401,16 @@ unsafe fn draw_assignment_line(hdc: HDC, render: CodeRender, line: AssignmentLin
         bottom: top + row_height,
     };
     let key = wide(line.key);
-    SetTextColor(hdc, COLOR_KEYWORD);
-    DrawTextW(
-        hdc,
-        key.as_ptr(),
-        -1,
-        &mut key_rect,
-        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-    );
+    if rect_has_area(&key_rect) {
+        SetTextColor(hdc, COLOR_KEYWORD);
+        DrawTextW(
+            hdc,
+            key.as_ptr(),
+            -1,
+            &mut key_rect,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     let mut equal_rect = RECT {
         left: equal_left - render.scroll_x,
@@ -1430,13 +1419,16 @@ unsafe fn draw_assignment_line(hdc: HDC, render: CodeRender, line: AssignmentLin
         bottom: top + row_height,
     };
     let equal = wide("=");
-    DrawTextW(
-        hdc,
-        equal.as_ptr(),
-        -1,
-        &mut equal_rect,
-        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-    );
+    if rect_has_area(&equal_rect) {
+        SetTextColor(hdc, COLOR_KEYWORD);
+        DrawTextW(
+            hdc,
+            equal.as_ptr(),
+            -1,
+            &mut equal_rect,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 
     let display_value = if line.value.trim().is_empty() {
         if line.blink_on { "_" } else { "" }
@@ -1453,22 +1445,24 @@ unsafe fn draw_assignment_line(hdc: HDC, render: CodeRender, line: AssignmentLin
     SelectObject(
         hdc,
         if line.hovered {
-            render.fonts.code_hover
+            theme.code_hover_font
         } else {
-            render.fonts.code
+            theme.code_font
         } as _,
     );
     SetTextColor(hdc, line.value_color);
-    DrawTextW(
-        hdc,
-        value.as_ptr(),
-        -1,
-        &mut value_rect,
-        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-    );
+    if rect_has_area(&value_rect) {
+        DrawTextW(
+            hdc,
+            value.as_ptr(),
+            -1,
+            &mut value_rect,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
 }
 
-unsafe fn draw_status_text(hdc: HDC, text: CodeText<'_>, render: CodeRender) {
+unsafe fn draw_status_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: CodeRender) {
     let status = if text.update_available {
         STATUS_UPDATE_AVAILABLE
     } else {
@@ -1487,13 +1481,17 @@ unsafe fn draw_status_text(hdc: HDC, text: CodeText<'_>, render: CodeRender) {
         right: render.layout.code_right(),
         bottom: top + render.layout.text_row_height(),
     };
+    if !rect_has_area(&rect) {
+        return;
+    }
+
     let display_text = wide(&format!("status = \"{compact}\""));
     SelectObject(
         hdc,
         if text.hover_target == Some(HoverTarget::UpdateStatus) {
-            render.fonts.code_hover
+            theme.code_hover_font
         } else {
-            render.fonts.code
+            theme.code_font
         } as _,
     );
     SetBkMode(hdc, TRANSPARENT as i32);
@@ -1535,7 +1533,7 @@ fn needs_scrollbar(status: &str) -> bool {
 
 unsafe fn measure_code_content_width(
     hdc: HDC,
-    fonts: RenderFonts,
+    theme: &Theme,
     text: CodeText<'_>,
     layout: WindowLayout,
 ) -> i32 {
@@ -1546,7 +1544,7 @@ unsafe fn measure_code_content_width(
         layout.content_left()
             + measure_segments_width(
                 hdc,
-                fonts,
+                theme,
                 layout,
                 &[
                     ("import", COLOR_KEYWORD),
@@ -1558,13 +1556,14 @@ unsafe fn measure_code_content_width(
     );
 
     if let Some(status_text) = status_display_text(text.status, text.update_available) {
-        right = right
-            .max(layout.content_left() + measure_text_width(hdc, fonts.code, layout, &status_text));
+        right = right.max(
+            layout.content_left() + measure_text_width(hdc, theme.code_font, layout, &status_text),
+        );
     }
 
     right = right.max(measure_assignment_right(
         hdc,
-        fonts,
+        theme,
         layout,
         PATH_VALUE_LEFT,
         text.src,
@@ -1572,7 +1571,7 @@ unsafe fn measure_code_content_width(
     ));
     right = right.max(measure_assignment_right(
         hdc,
-        fonts,
+        theme,
         layout,
         PATH_VALUE_LEFT,
         text.out,
@@ -1580,7 +1579,7 @@ unsafe fn measure_code_content_width(
     ));
     right = right.max(measure_assignment_right(
         hdc,
-        fonts,
+        theme,
         layout,
         LANGUAGE_VALUE_LEFT,
         text.language,
@@ -1590,7 +1589,7 @@ unsafe fn measure_code_content_width(
         layout.content_left()
             + measure_segments_width(
                 hdc,
-                fonts,
+                theme,
                 layout,
                 &[
                     ("transplanter", COLOR_BUILTIN),
@@ -1610,7 +1609,7 @@ unsafe fn measure_code_content_width(
 
 unsafe fn measure_assignment_right(
     hdc: HDC,
-    fonts: RenderFonts,
+    theme: &Theme,
     layout: WindowLayout,
     value_left: i32,
     value: &str,
@@ -1621,18 +1620,18 @@ unsafe fn measure_assignment_right(
     } else {
         value
     };
-    layout.s(value_left) + measure_text_width(hdc, fonts.code, layout, display_value)
+    layout.s(value_left) + measure_text_width(hdc, theme.code_font, layout, display_value)
 }
 
 unsafe fn measure_segments_width(
     hdc: HDC,
-    fonts: RenderFonts,
+    theme: &Theme,
     layout: WindowLayout,
     segments: &[(&str, u32)],
 ) -> i32 {
     segments
         .iter()
-        .map(|(text, _)| measure_text_width(hdc, fonts.code, layout, text))
+        .map(|(text, _)| measure_text_width(hdc, theme.code_font, layout, text))
         .sum()
 }
 
@@ -1709,8 +1708,12 @@ fn horizontal_scroll_metrics(
 }
 
 unsafe fn draw_horizontal_scrollbar(hdc: HDC, theme: &Theme, metrics: HorizontalScrollMetrics) {
-    FillRect(hdc, &metrics.track, theme.edit_shadow_deep);
-    FillRect(hdc, &metrics.thumb, theme.scroll);
+    if rect_has_area(&metrics.track) {
+        FillRect(hdc, &metrics.track, theme.edit_shadow_deep);
+    }
+    if rect_has_area(&metrics.thumb) {
+        FillRect(hdc, &metrics.thumb, theme.scroll);
+    }
 }
 
 fn title_button_at(point: POINT, layout: WindowLayout) -> Option<TitleButton> {
@@ -1950,6 +1953,10 @@ fn point_in_rect(point: POINT, rect: RECT) -> bool {
     point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
 }
 
+fn rect_has_area(rect: &RECT) -> bool {
+    rect.right > rect.left && rect.bottom > rect.top
+}
+
 fn point_from_lparam(lparam: LPARAM) -> POINT {
     POINT {
         x: (lparam & 0xffff) as u16 as i16 as i32,
@@ -2010,7 +2017,6 @@ unsafe fn draw_game_button_surface(
     bounds: &RECT,
     theme: &Theme,
     surface: ButtonSurface,
-    scale: f32,
 ) -> RECT {
     let background_brush = match surface.background {
         ButtonBackground::Title => theme.title,
@@ -2024,9 +2030,9 @@ unsafe fn draw_game_button_surface(
 
     FillRect(hdc, bounds, background_brush);
 
-    let shadow = scaled_len(4, scale).max(1);
-    let soft = scaled_len(2, scale).max(1);
-    let deep = scaled_len(3, scale).max(1);
+    let shadow = 4;
+    let soft = 2;
+    let deep = 3;
     let face = RECT {
         left: bounds.left,
         top: bounds.top,
@@ -2065,7 +2071,7 @@ unsafe fn draw_game_button_surface(
 
     SelectObject(hdc, theme.no_outline as _);
     SelectObject(hdc, surface.brush as _);
-    let radius = scaled_len(5, scale).max(1);
+    let radius = 5;
     RoundRect(
         hdc,
         face.left,
@@ -2079,29 +2085,27 @@ unsafe fn draw_game_button_surface(
     face
 }
 
-unsafe fn draw_close_icon(hdc: HDC, bounds: &RECT, background_color: u32, scale: f32) {
+unsafe fn draw_close_icon(hdc: HDC, bounds: &RECT, background_color: u32) {
     const SAMPLES: i32 = 4;
+    const ICON_SIZE: i32 = 19;
     const INSET: f32 = 3.5;
     const STROKE_RADIUS: f32 = 2.15;
 
-    let icon_size = scaled_len(19, scale).max(8);
-    let inset = INSET * scale;
-    let stroke_radius = STROKE_RADIUS * scale;
-    let left = bounds.left + ((bounds.right - bounds.left) - icon_size) / 2;
-    let top = bounds.top + ((bounds.bottom - bounds.top) - icon_size) / 2;
-    let max = icon_size as f32 - inset;
+    let left = bounds.left + ((bounds.right - bounds.left) - ICON_SIZE) / 2;
+    let top = bounds.top + ((bounds.bottom - bounds.top) - ICON_SIZE) / 2;
+    let max = ICON_SIZE as f32 - INSET;
     let sample_count = (SAMPLES * SAMPLES) as f32;
 
-    for y in 0..icon_size {
-        for x in 0..icon_size {
+    for y in 0..ICON_SIZE {
+        for x in 0..ICON_SIZE {
             let mut coverage = 0;
             for sample_y in 0..SAMPLES {
                 for sample_x in 0..SAMPLES {
                     let px = x as f32 + (sample_x as f32 + 0.5) / SAMPLES as f32;
                     let py = y as f32 + (sample_y as f32 + 0.5) / SAMPLES as f32;
-                    let down = distance_to_segment(px, py, inset, inset, max, max);
-                    let up = distance_to_segment(px, py, max, inset, inset, max);
-                    if down.min(up) <= stroke_radius {
+                    let down = distance_to_segment(px, py, INSET, INSET, max, max);
+                    let up = distance_to_segment(px, py, max, INSET, INSET, max);
+                    if down.min(up) <= STROKE_RADIUS {
                         coverage += 1;
                     }
                 }
@@ -2829,7 +2833,10 @@ fn default_initial_config(config_path: &Path) -> Config {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     Config {
-        src_dir: base_dir.join("rs_src").to_string_lossy().into_owned(),
+        src_dir: base_dir
+            .join(DEFAULT_SRC_DIR)
+            .to_string_lossy()
+            .into_owned(),
         out_dir: String::new(),
         language: LanguageMode::Rust,
         ..Config::default()
@@ -3059,18 +3066,18 @@ mod tests {
         let (config, startup_error) = load_or_create_initial_workspace(&config_path);
 
         assert_eq!(startup_error, None);
-        assert_eq!(PathBuf::from(&config.src_dir), workspace.join("rs_src"));
+        assert_eq!(PathBuf::from(&config.src_dir), workspace.join("play_src"));
         assert_eq!(config.out_dir, "");
         assert_eq!(config.language, LanguageMode::Rust);
         assert!(config_path.is_file());
-        assert!(workspace.join("rs_src").join("main.rs").is_file());
+        assert!(workspace.join("play_src").join("main.rs").is_file());
         assert!(
-            fs::read_to_string(workspace.join("rs_src").join("main.rs"))
+            fs::read_to_string(workspace.join("play_src").join("main.rs"))
                 .unwrap()
                 .contains("harvest();")
         );
         assert!(workspace.join("Cargo.toml").is_file());
-        assert!(!workspace.join("rs_src").join("Cargo.toml").exists());
+        assert!(!workspace.join("play_src").join("Cargo.toml").exists());
         assert!(
             workspace
                 .join(".transplanter_ide")
@@ -3079,7 +3086,12 @@ mod tests {
                 .join("prelude.rs")
                 .is_file()
         );
-        assert!(!workspace.join("rs_src").join(".transplanter_ide").exists());
+        assert!(
+            !workspace
+                .join("play_src")
+                .join(".transplanter_ide")
+                .exists()
+        );
 
         let _ = fs::remove_dir_all(workspace);
     }
@@ -3117,7 +3129,7 @@ mod tests {
     #[test]
     fn initial_setup_preserves_existing_main_rs() {
         let workspace = temp_workspace("initial_setup_preserve");
-        let src_dir = workspace.join("rs_src");
+        let src_dir = workspace.join("play_src");
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(
             src_dir.join("main.rs"),

@@ -314,7 +314,7 @@ fn compile_single_source(input_path: &std::path::Path, source: &str) -> Result<S
 
 fn print_usage() {
     println!(
-        "Transplanter (耕訳機)\n\nUsage:\n  transplanter <input.rs|input.scm|input.lisp>\n  transplanter <input.rs|input.scm|input.lisp> -o <output.py>\n  transplanter <input.rs|input.scm|input.lisp> --check\n  transplanter --init-ide [--src rs_src]\n  transplanter --sync [--src rs_src] [--out py_src] [--language auto|rust|lisp]\n  transplanter --watch [--src rs_src] [--out py_src] [--language auto|rust|lisp]\n  transplanter --version"
+        "Transplanter (耕訳機)\n\nUsage:\n  transplanter <input.rs|input.scm|input.lisp>\n  transplanter <input.rs|input.scm|input.lisp> -o <output.py>\n  transplanter <input.rs|input.scm|input.lisp> --check\n  transplanter --init-ide [--src play_src]\n  transplanter --sync [--src play_src] [--out py_src] [--language auto|rust|lisp]\n  transplanter --watch [--src play_src] [--out py_src] [--language auto|rust|lisp]\n  transplanter --version"
     );
 }
 

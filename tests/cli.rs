@@ -156,15 +156,15 @@ fn help_flag_prints_usage() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("transplanter --init-ide [--src rs_src]"),
+        stdout.contains("transplanter --init-ide [--src play_src]"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("transplanter --sync [--src rs_src] [--out py_src]"),
+        stdout.contains("transplanter --sync [--src play_src] [--out py_src]"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("transplanter --watch [--src rs_src] [--out py_src]"),
+        stdout.contains("transplanter --watch [--src play_src] [--out py_src]"),
         "stdout: {stdout}"
     );
     assert!(
@@ -474,7 +474,7 @@ fn check_flag_rejects_output_path() {
 fn sync_uses_default_directories() {
     let workspace = temp_workspace("sync_default");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
 
@@ -496,7 +496,7 @@ fn sync_uses_default_directories() {
     assert!(
         fs::read_to_string(workspace.join("Cargo.toml"))
             .unwrap()
-            .contains("path = \"rs_src/main.rs\"")
+            .contains("path = \"play_src/main.rs\"")
     );
     assert!(
         String::from_utf8(output.stdout)
@@ -512,7 +512,7 @@ fn sync_uses_default_directories() {
 fn init_ide_generates_manifest() {
     let workspace = temp_workspace("init_ide");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
 
@@ -536,7 +536,10 @@ fn init_ide_generates_manifest() {
     );
     assert!(manifest.contains("[[bin]]"), "{manifest}");
     assert!(manifest.contains("name = \"main\""), "{manifest}");
-    assert!(manifest.contains("path = \"rs_src/main.rs\""), "{manifest}");
+    assert!(
+        manifest.contains("path = \"play_src/main.rs\""),
+        "{manifest}"
+    );
     assert!(
         workspace
             .join(".transplanter_ide")
@@ -553,7 +556,7 @@ fn init_ide_generates_manifest() {
 fn init_ide_manifest_passes_cargo_check() {
     let workspace = temp_workspace("init_ide_cargo_check");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         r#"use transplanter_rust::prelude::*;
 
 fn ready(entity: Entity) -> bool {
@@ -645,10 +648,39 @@ fn sync_accepts_custom_directories() {
 }
 
 #[test]
+fn sync_accepts_legacy_rs_src_when_explicit() {
+    let workspace = temp_workspace("sync_legacy_rs_src");
+    write_file(
+        &workspace.join("rs_src").join("main.rs"),
+        "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg("--sync")
+        .arg("--src")
+        .arg("rs_src")
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("py_src").join("main.py")).unwrap(),
+        "harvest()\n"
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn sync_accepts_lisp_sources() {
     let workspace = temp_workspace("sync_lisp");
     write_file(
-        &workspace.join("rs_src").join("main.scm"),
+        &workspace.join("play_src").join("main.scm"),
         "(use transplanter)\n\n(define (main)\n  (clear)\n  (move :east))\n",
     );
 
@@ -678,11 +710,11 @@ fn sync_accepts_lisp_sources() {
 fn sync_accepts_mixed_rust_and_lisp_sources() {
     let workspace = temp_workspace("sync_mixed");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
     write_file(
-        &workspace.join("rs_src").join("lab.scm"),
+        &workspace.join("play_src").join("lab.scm"),
         "(define (main)\n  (quick-print \"lab\"))\n",
     );
 
@@ -716,11 +748,11 @@ fn sync_accepts_mixed_rust_and_lisp_sources() {
 fn sync_rust_language_ignores_lisp_sources() {
     let workspace = temp_workspace("sync_rust_language");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
     write_file(
-        &workspace.join("rs_src").join("main.scm"),
+        &workspace.join("play_src").join("main.scm"),
         "(not valid lisp",
     );
 
@@ -749,11 +781,11 @@ fn sync_rust_language_ignores_lisp_sources() {
 fn sync_lisp_language_ignores_rust_sources() {
     let workspace = temp_workspace("sync_lisp_language");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    missing_game_api();\n}\n",
     );
     write_file(
-        &workspace.join("rs_src").join("main.scm"),
+        &workspace.join("play_src").join("main.scm"),
         "(use transplanter)\n\n(define (main)\n  (harvest))\n",
     );
 
@@ -785,11 +817,11 @@ fn sync_lisp_language_ignores_rust_sources() {
 fn sync_rejects_duplicate_output_paths_across_languages() {
     let workspace = temp_workspace("sync_duplicate_outputs");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
     write_file(
-        &workspace.join("rs_src").join("main.scm"),
+        &workspace.join("play_src").join("main.scm"),
         "(define (main)\n  (quick-print \"lisp\"))\n",
     );
 
@@ -813,11 +845,11 @@ fn sync_rejects_duplicate_output_paths_across_languages() {
 fn sync_auto_language_rejects_duplicate_output_paths() {
     let workspace = temp_workspace("sync_auto_duplicate_outputs");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n}\n",
     );
     write_file(
-        &workspace.join("rs_src").join("main.scm"),
+        &workspace.join("play_src").join("main.scm"),
         "(define (main)\n  (quick-print \"lisp\"))\n",
     );
 
@@ -843,7 +875,7 @@ fn sync_auto_language_rejects_duplicate_output_paths() {
 fn sync_keeps_subdirectory_layout() {
     let workspace = temp_workspace("sync_subdir");
     write_file(
-        &workspace.join("rs_src").join("crops").join("carrot.rs"),
+        &workspace.join("play_src").join("crops").join("carrot.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    plant(Entity::Carrot);\n}\n",
     );
 
@@ -870,11 +902,11 @@ fn sync_keeps_subdirectory_layout() {
 fn sync_outputs_external_module_as_importable_python_file() {
     let workspace = temp_workspace("sync_external_module");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nmod farmlab;\n\nfn main() {\n    farmlab::main();\n}\n",
     );
     write_file(
-        &workspace.join("rs_src").join("farmlab.rs"),
+        &workspace.join("play_src").join("farmlab.rs"),
         "use transplanter_rust::prelude::*;\n\npub fn main() {\n    print(\"test_text\");\n}\n",
     );
 
@@ -900,7 +932,7 @@ fn sync_outputs_external_module_as_importable_python_file() {
     assert!(
         !fs::read_to_string(workspace.join("Cargo.toml"))
             .unwrap()
-            .contains("path = \"rs_src/farmlab.rs\"")
+            .contains("path = \"play_src/farmlab.rs\"")
     );
 
     let _ = fs::remove_dir_all(workspace);
@@ -910,10 +942,10 @@ fn sync_outputs_external_module_as_importable_python_file() {
 fn sync_updates_external_module_as_module_file() {
     let workspace = temp_workspace("sync_external_module_update");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nmod farmlab;\n\nfn main() {\n    farmlab::main();\n}\n",
     );
-    let module_path = workspace.join("rs_src").join("farmlab.rs");
+    let module_path = workspace.join("play_src").join("farmlab.rs");
     write_file(
         &module_path,
         "use transplanter_rust::prelude::*;\n\npub fn main() {\n    print(\"first\");\n}\n",
@@ -956,7 +988,7 @@ fn sync_updates_external_module_as_module_file() {
 fn sync_reports_japanese_file_position_for_invalid_source() {
     let workspace = temp_workspace("sync_invalid");
     write_file(
-        &workspace.join("rs_src").join("bad.rs"),
+        &workspace.join("play_src").join("bad.rs"),
         "fn main() {\n    harvest()\n}\n",
     );
 
@@ -982,7 +1014,7 @@ fn sync_reports_japanese_file_position_for_invalid_source() {
 fn sync_reports_missing_external_module_file() {
     let workspace = temp_workspace("sync_missing_external_module");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nmod missing;\n\nfn main() {\n    missing::main();\n}\n",
     );
 
@@ -1005,7 +1037,7 @@ fn sync_reports_missing_external_module_file() {
 fn sync_rejects_rs_that_fails_cargo_check_without_writing_output() {
     let workspace = temp_workspace("sync_rust_invalid");
     write_file(
-        &workspace.join("rs_src").join("main.rs"),
+        &workspace.join("play_src").join("main.rs"),
         "use transplanter_rust::prelude::*;\n\nfn main() {\n    harvest();\n    missing_game_api();\n}\n",
     );
 
@@ -1034,7 +1066,7 @@ fn sync_rejects_rs_that_fails_cargo_check_without_writing_output() {
 fn sync_ignores_non_rs_extension() {
     let workspace = temp_workspace("sync_non_rs_extension");
     write_file(
-        &workspace.join("rs_src").join("notes.txt"),
+        &workspace.join("play_src").join("notes.txt"),
         "fn main() {\n    can_harvest();\n}\n",
     );
 
@@ -1117,7 +1149,7 @@ fn sync_reports_missing_source_directory() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("エラー: 入力フォルダ `rs_src` が見つかりません"),
+        stderr.contains("エラー: 入力フォルダ `play_src` が見つかりません"),
         "stderr: {stderr}"
     );
 
