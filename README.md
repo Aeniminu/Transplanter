@@ -1,4 +1,4 @@
-# Transplanter / 耕訳機
+# Transplanter
 
 ※現在は、Windows専用です。
 
