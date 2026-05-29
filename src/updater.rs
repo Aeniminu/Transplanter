@@ -1,7 +1,7 @@
 use std::cmp::Ordering as CmpOrdering;
 use std::fs;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{self, Command};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -32,51 +32,13 @@ pub fn check_for_update() -> Result<UpdateCheck, String> {
     })
 }
 
-pub fn download_update(release: &ReleaseInfo, exe_dir: &Path) -> Result<PathBuf, String> {
-    let new_path = exe_dir.join(format!("{RELEASE_ASSET_NAME}.new"));
-    if new_path.exists() {
-        fs::remove_file(&new_path).map_err(|err| {
-            format!(
-                "エラー: 古い更新ファイル `{}` を削除できません: {err}",
-                new_path.display()
-            )
-        })?;
-    }
-
-    let script = r#"
-$ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing
-"#;
-    let output = powershell_command(script)
-        .arg(&release.asset_url)
-        .arg(&new_path)
-        .output()
-        .map_err(|err| format!("エラー: 更新ファイルのダウンロードを開始できません: {err}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "エラー: 更新ファイルをダウンロードできません。\n{}",
-            command_details(&output)
-        ));
-    }
-
-    let metadata = fs::metadata(&new_path).map_err(|err| {
-        format!(
-            "エラー: ダウンロード済み更新ファイル `{}` を確認できません: {err}",
-            new_path.display()
-        )
-    })?;
-    if metadata.len() == 0 {
-        return Err("エラー: ダウンロードした更新ファイルが空です".to_string());
-    }
-
-    Ok(new_path)
-}
-
-pub fn launch_update_script(new_path: &Path) -> Result<(), String> {
+pub fn launch_update_script(release: &ReleaseInfo) -> Result<(), String> {
     let exe_path = std::env::current_exe()
         .map_err(|err| format!("エラー: 現在の実行ファイルの場所を確認できません: {err}"))?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| "エラー: 現在の実行ファイルのフォルダを確認できません".to_string())?;
+    let new_path = exe_dir.join(format!("{RELEASE_ASSET_NAME}.new"));
     let script_path = exe_path.with_file_name("Transplanter-update.ps1");
     fs::write(&script_path, update_script()).map_err(|err| {
         format!(
@@ -88,7 +50,8 @@ pub fn launch_update_script(new_path: &Path) -> Result<(), String> {
     powershell_file(&script_path)
         .arg(process::id().to_string())
         .arg(&exe_path)
-        .arg(new_path)
+        .arg(&new_path)
+        .arg(&release.asset_url)
         .spawn()
         .map_err(|err| format!("エラー: 更新用スクリプトを起動できません: {err}"))?;
 
@@ -279,15 +242,27 @@ fn update_script() -> &'static str {
 param(
     [Parameter(Mandatory = $true)][int]$ProcessId,
     [Parameter(Mandatory = $true)][string]$TargetPath,
-    [Parameter(Mandatory = $true)][string]$NewPath
+    [Parameter(Mandatory = $true)][string]$NewPath,
+    [Parameter(Mandatory = $true)][string]$AssetUrl
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $backupPath = "$TargetPath.old"
+$logPath = "$TargetPath.update.log"
 
 try {
     Wait-Process -Id $ProcessId -Timeout 30 -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 500
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    if (Test-Path -LiteralPath $NewPath) {
+        Remove-Item -LiteralPath $NewPath -Force
+    }
+    Invoke-WebRequest -Uri $AssetUrl -OutFile $NewPath -UseBasicParsing
+    if (!(Test-Path -LiteralPath $NewPath) -or ((Get-Item -LiteralPath $NewPath).Length -le 0)) {
+        throw 'Downloaded update file is empty.'
+    }
 
     if (Test-Path -LiteralPath $backupPath) {
         Remove-Item -LiteralPath $backupPath -Force
@@ -299,6 +274,7 @@ try {
     Start-Process -FilePath $TargetPath
     Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
 } catch {
+    $_ | Out-String | Set-Content -LiteralPath $logPath -Encoding UTF8
     if (!(Test-Path -LiteralPath $TargetPath) -and (Test-Path -LiteralPath $backupPath)) {
         Rename-Item -LiteralPath $backupPath -NewName (Split-Path -Leaf $TargetPath) -Force
     }
@@ -334,5 +310,16 @@ mod tests {
         assert_eq!(release.version, "0.1.1");
         assert_eq!(release.notes, "テスト");
         assert_eq!(release.asset_url, "https://example.test/Transplanter.exe");
+    }
+
+    #[test]
+    fn update_script_downloads_after_current_process_exits() {
+        let script = update_script();
+
+        assert!(script.contains("[string]$AssetUrl"));
+        assert!(script.contains("Wait-Process -Id $ProcessId"));
+        assert!(script.contains("Invoke-WebRequest -Uri $AssetUrl"));
+        assert!(script.contains("Rename-Item -LiteralPath $TargetPath"));
+        assert!(script.contains("Start-Process -FilePath $TargetPath"));
     }
 }

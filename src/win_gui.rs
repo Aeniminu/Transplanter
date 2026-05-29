@@ -43,13 +43,13 @@ use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     ES_AUTOHSCROLL, GWLP_USERDATA, GetCursorPos, GetDlgCtrlID, GetMessageW, GetWindowLongPtrW,
-    GetWindowTextW, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW, IDYES, LoadCursorW, MB_ICONINFORMATION,
-    MB_YESNO, MSG, MessageBoxW, PostQuitMessage, RegisterClassW, SW_MINIMIZE, SW_SHOW,
-    SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCDESTROY,
-    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_POPUP,
-    WS_TABSTOP, WS_VISIBLE,
+    GetWindowTextW, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW, IDYES, LoadCursorW, MB_ICONERROR,
+    MB_ICONINFORMATION, MB_YESNO, MSG, MessageBoxW, PostQuitMessage, RegisterClassW, SW_MINIMIZE,
+    SW_SHOW, SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+    TranslateMessage, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+    WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CHILD,
+    WS_CLIPCHILDREN, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
 const CLASS_NAME: &str = "transplanter_window";
@@ -375,7 +375,6 @@ enum GuiEvent {
     Error(String),
     UpdateAvailable(ReleaseInfo),
     UpdateUnavailable(ReleaseInfo),
-    UpdateReady(PathBuf),
 }
 
 pub fn detach_console() {
@@ -1638,14 +1637,21 @@ unsafe fn handle_update_clicked(hwnd: HWND) {
     }
 
     state.update_busy = true;
-    let tx = state.tx.clone();
-    let exe_dir = exe_dir();
-    thread::spawn(move || match updater::download_update(&release, &exe_dir) {
-        Ok(path) => {
-            let _ = tx.send(GuiEvent::UpdateReady(path));
+    match updater::launch_update_script(&release) {
+        Ok(()) => {
+            DestroyWindow(hwnd);
         }
-        Err(err) => send_error(&tx, err),
-    });
+        Err(err) => {
+            state.update_busy = false;
+            show_update_error(hwnd, &err);
+        }
+    }
+}
+
+unsafe fn show_update_error(hwnd: HWND, message: &str) {
+    let title = wide("Transplanter 更新");
+    let message = wide(message);
+    MessageBoxW(hwnd, message.as_ptr(), title.as_ptr(), MB_ICONERROR);
 }
 
 unsafe fn save_if_edits_changed(hwnd: HWND) {
@@ -1986,7 +1992,6 @@ unsafe fn drain_events(hwnd: HWND) {
             GuiEvent::Error(message) => set_status(hwnd, &message),
             GuiEvent::UpdateAvailable(release) => handle_update_available(hwnd, release),
             GuiEvent::UpdateUnavailable(release) => handle_update_unavailable(hwnd, release),
-            GuiEvent::UpdateReady(path) => handle_update_ready(hwnd, path),
         }
     }
 }
@@ -2012,21 +2017,6 @@ unsafe fn handle_update_unavailable(hwnd: HWND, release: ReleaseInfo) {
     let _ = write_config(&state.config_path, &state.config);
     set_status(hwnd, STATUS_UP_TO_DATE);
     InvalidateRect(hwnd, null(), 0);
-}
-
-unsafe fn handle_update_ready(hwnd: HWND, path: PathBuf) {
-    let Some(state) = state_from_hwnd(hwnd) else {
-        return;
-    };
-    match updater::launch_update_script(&path) {
-        Ok(()) => {
-            DestroyWindow(hwnd);
-        }
-        Err(err) => {
-            state.update_busy = false;
-            set_status(hwnd, &err);
-        }
-    }
 }
 
 unsafe fn stop_watcher(state: &mut GuiState) {
@@ -2535,9 +2525,7 @@ mod tests {
         loop {
             match rx.recv_timeout(Duration::from_secs(3)).unwrap() {
                 GuiEvent::Status(message) | GuiEvent::Error(message) => return message,
-                GuiEvent::UpdateAvailable(_)
-                | GuiEvent::UpdateUnavailable(_)
-                | GuiEvent::UpdateReady(_) => {}
+                GuiEvent::UpdateAvailable(_) | GuiEvent::UpdateUnavailable(_) => {}
             }
         }
     }
