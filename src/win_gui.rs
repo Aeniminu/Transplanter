@@ -508,16 +508,13 @@ unsafe extern "system" fn wnd_proc(
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
             create_controls(hwnd, &mut *state_ptr);
             SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL_MS, None);
-            if (*state_ptr).startup_error.is_none() {
-                save_config_and_start(hwnd);
-            }
             start_update_check(hwnd);
             0
         }
         WM_COMMAND => {
             let id = (wparam & 0xffff) as i32;
             match id {
-                ID_RUN => save_config_and_start(hwnd),
+                ID_RUN => toggle_run(hwnd),
                 ID_STEP => sync_once(hwnd),
                 ID_MINIMIZE => {
                     ShowWindow(hwnd, SW_MINIMIZE);
@@ -1527,7 +1524,7 @@ unsafe fn browse_and_set_path(hwnd: HWND, edit_id: i32, is_src: bool) {
         }
     }
 
-    save_config_and_start(hwnd);
+    save_config_only(hwnd);
 }
 
 unsafe fn cycle_language_mode(hwnd: HWND) {
@@ -1536,7 +1533,7 @@ unsafe fn cycle_language_mode(hwnd: HWND) {
     };
     state.config.language = state.config.language.next();
     InvalidateRect(hwnd, null(), 0);
-    save_config_and_start(hwnd);
+    save_config_only(hwnd);
 }
 
 unsafe fn choose_folder(hwnd: HWND, initial_folder: Option<&str>) -> Option<String> {
@@ -1654,6 +1651,19 @@ unsafe fn show_update_error(hwnd: HWND, message: &str) {
     MessageBoxW(hwnd, message.as_ptr(), title.as_ptr(), MB_ICONERROR);
 }
 
+unsafe fn toggle_run(hwnd: HWND) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+
+    if state.active {
+        deactivate_run(hwnd, state);
+        return;
+    }
+
+    save_config_and_start(hwnd);
+}
+
 unsafe fn save_if_edits_changed(hwnd: HWND) {
     let src = get_control_text(hwnd, ID_SRC_EDIT);
     let out = get_control_text(hwnd, ID_OUT_EDIT);
@@ -1672,75 +1682,70 @@ unsafe fn save_if_edits_changed(hwnd: HWND) {
     };
 
     if changed {
-        save_config_and_start(hwnd);
+        save_config_only(hwnd);
     }
+}
+
+unsafe fn save_config_only(hwnd: HWND) {
+    let Some(state) = state_from_hwnd(hwnd) else {
+        return;
+    };
+    let Some(config) = persist_current_config(hwnd, state) else {
+        return;
+    };
+
+    if state.active {
+        deactivate_run(hwnd, state);
+    }
+
+    if let Err(err) = prepare_existing_workspace(&config) {
+        set_status(hwnd, &err);
+    }
+    InvalidateRect(hwnd, null(), 0);
 }
 
 unsafe fn save_config_and_start(hwnd: HWND) {
     let Some(state) = state_from_hwnd(hwnd) else {
         return;
     };
-    let config = Config {
-        src_dir: state.config.src_dir.trim().to_string(),
-        out_dir: state.config.out_dir.trim().to_string(),
-        language: state.config.language,
-        last_release_tag: state.config.last_release_tag.clone(),
-        last_release_notes: state.config.last_release_notes.clone(),
-    };
-    state.config = config.clone();
-
-    if let Err(err) = write_config(&state.config_path, &config) {
-        stop_watcher(state);
-        state.active = false;
-        set_status(hwnd, &err);
-        InvalidateRect(hwnd, null(), 0);
+    let Some(config) = persist_current_config(hwnd, state) else {
         return;
-    }
+    };
 
     if config.src_dir.is_empty() {
-        stop_watcher(state);
-        state.active = false;
+        deactivate_run(hwnd, state);
         set_status(hwnd, "エラー: ソースフォルダが空です");
-        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
     let src_dir = PathBuf::from(&config.src_dir);
 
     if !src_dir.is_dir() {
-        stop_watcher(state);
-        state.active = false;
+        deactivate_run(hwnd, state);
         set_status(hwnd, "エラー: ソースフォルダが見つかりません");
-        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
     if let Err(err) = ensure_starter_file(&config) {
-        stop_watcher(state);
-        state.active = false;
+        deactivate_run(hwnd, state);
         set_status(hwnd, &err);
-        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
     if config.out_dir.is_empty() {
-        stop_watcher(state);
-        state.active = false;
+        deactivate_run(hwnd, state);
         set_status(hwnd, "待機中: Saveフォルダを選択");
-        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
     let out_dir = PathBuf::from(&config.out_dir);
 
     if let Err(err) = fs::create_dir_all(&out_dir) {
-        stop_watcher(state);
-        state.active = false;
+        deactivate_run(hwnd, state);
         set_status(
             hwnd,
             &format!("エラー: Save フォルダを作成できません: {err}"),
         );
-        InvalidateRect(hwnd, null(), 0);
         return;
     }
 
@@ -1780,13 +1785,7 @@ unsafe fn sync_once(hwnd: HWND) {
         return;
     };
 
-    let config = Config {
-        src_dir: state.config.src_dir.trim().to_string(),
-        out_dir: state.config.out_dir.trim().to_string(),
-        language: state.config.language,
-        last_release_tag: state.config.last_release_tag.clone(),
-        last_release_notes: state.config.last_release_notes.clone(),
-    };
+    let config = config_from_state(state);
 
     if config.src_dir.is_empty() || config.out_dir.is_empty() {
         set_status(hwnd, "待機中: Saveフォルダを選択");
@@ -2023,6 +2022,53 @@ unsafe fn stop_watcher(state: &mut GuiState) {
     if let Some(watcher) = state.watcher.take() {
         watcher.stop();
     }
+}
+
+unsafe fn deactivate_run(hwnd: HWND, state: &mut GuiState) {
+    stop_watcher(state);
+    state.active = false;
+    invalidate_run_controls(hwnd);
+    InvalidateRect(hwnd, null(), 0);
+}
+
+unsafe fn persist_current_config(hwnd: HWND, state: &mut GuiState) -> Option<Config> {
+    let config = config_from_state(state);
+    state.config = config.clone();
+
+    if let Err(err) = write_config(&state.config_path, &config) {
+        deactivate_run(hwnd, state);
+        set_status(hwnd, &err);
+        return None;
+    }
+
+    Some(config)
+}
+
+fn config_from_state(state: &GuiState) -> Config {
+    Config {
+        src_dir: state.config.src_dir.trim().to_string(),
+        out_dir: state.config.out_dir.trim().to_string(),
+        language: state.config.language,
+        last_release_tag: state.config.last_release_tag.clone(),
+        last_release_notes: state.config.last_release_notes.clone(),
+    }
+}
+
+fn prepare_existing_workspace(config: &Config) -> Result<(), String> {
+    if config.src_dir.trim().is_empty() {
+        return Ok(());
+    }
+
+    let src_dir = PathBuf::from(&config.src_dir);
+    if !src_dir.is_dir() {
+        return Ok(());
+    }
+
+    ensure_starter_file(config)?;
+    if config.language.includes_rust() {
+        write_manifest(&src_dir)?;
+    }
+    Ok(())
 }
 
 unsafe fn state_from_hwnd(hwnd: HWND) -> Option<&'static mut GuiState> {
