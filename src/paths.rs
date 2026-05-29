@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_SRC_DIR: &str = "play_src";
+pub const LEGACY_DEFAULT_SRC_DIR: &str = "rs_src";
 pub const DEFAULT_OUT_DIR: &str = "py_src";
 pub const IDE_SUPPORT_DIR: &str = ".transplanter_ide";
 pub const IDE_SUPPORT_CRATE_DIR: &str = ".transplanter_ide/transplanter_rust";

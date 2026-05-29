@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::ide_support::write_manifest;
 use crate::language::LanguageMode;
-use crate::paths::{DEFAULT_SRC_DIR, display_path, should_skip_source_dir};
+use crate::paths::{DEFAULT_SRC_DIR, LEGACY_DEFAULT_SRC_DIR, display_path, should_skip_source_dir};
 use crate::project::{
     FileStamp, compile_project_file, output_path_for, snapshot_output_files, snapshot_source_files,
     sync_project,
@@ -2812,7 +2812,7 @@ fn exe_dir() -> PathBuf {
 
 fn load_or_create_initial_workspace(config_path: &Path) -> (Config, Option<String>) {
     let config_exists = config_path.is_file();
-    let config = if config_exists {
+    let mut config = if config_exists {
         match read_config(config_path) {
             Ok(config) => config,
             Err(err) => return (Config::default(), Some(err)),
@@ -2820,21 +2820,42 @@ fn load_or_create_initial_workspace(config_path: &Path) -> (Config, Option<Strin
     } else {
         default_initial_config(config_path)
     };
+    let config_needs_write =
+        !config_exists || use_default_src_if_missing_legacy_src(config_path, &mut config);
 
-    match ensure_initial_workspace(config_path, &config, config_exists) {
+    match ensure_initial_workspace(config_path, &config, config_needs_write) {
         Ok(()) => (config, None),
         Err(err) => (config, Some(err)),
     }
 }
 
+fn use_default_src_if_missing_legacy_src(config_path: &Path, config: &mut Config) -> bool {
+    let src_dir = config.src_dir.trim();
+    if src_dir.is_empty() {
+        return false;
+    }
+
+    let src_path = PathBuf::from(src_dir);
+    let absolute_src_path = absolute_config_relative_path(config_path, &src_path);
+    if absolute_src_path.exists() || !is_legacy_default_src_path(config_path, &src_path) {
+        return false;
+    }
+
+    config.src_dir = default_src_dir_for_config(config_path)
+        .to_string_lossy()
+        .into_owned();
+    true
+}
+
+fn is_legacy_default_src_path(config_path: &Path, src_path: &Path) -> bool {
+    src_path == Path::new(LEGACY_DEFAULT_SRC_DIR)
+        || absolute_config_relative_path(config_path, src_path)
+            == config_base_dir(config_path).join(LEGACY_DEFAULT_SRC_DIR)
+}
+
 fn default_initial_config(config_path: &Path) -> Config {
-    let base_dir = config_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
     Config {
-        src_dir: base_dir
-            .join(DEFAULT_SRC_DIR)
+        src_dir: default_src_dir_for_config(config_path)
             .to_string_lossy()
             .into_owned(),
         out_dir: String::new(),
@@ -2843,12 +2864,31 @@ fn default_initial_config(config_path: &Path) -> Config {
     }
 }
 
+fn default_src_dir_for_config(config_path: &Path) -> PathBuf {
+    config_base_dir(config_path).join(DEFAULT_SRC_DIR)
+}
+
+fn absolute_config_relative_path(config_path: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config_base_dir(config_path).join(path)
+    }
+}
+
+fn config_base_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn ensure_initial_workspace(
     config_path: &Path,
     config: &Config,
-    config_exists: bool,
+    write_current_config: bool,
 ) -> Result<(), String> {
-    if !config_exists {
+    if write_current_config {
         write_config(config_path, config)?;
     }
 
@@ -3123,6 +3163,34 @@ mod tests {
         assert_eq!(config.language, LanguageMode::Lisp);
         assert!(src_dir.join("main.scm").is_file());
         assert!(!src_dir.join("main.rs").exists());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn missing_legacy_rs_src_config_uses_play_src() {
+        let workspace = temp_workspace("missing_legacy_rs_src");
+        let config_path = workspace.join("transplanter.toml");
+        let legacy_src_dir = workspace.join("rs_src");
+        fs::write(
+            &config_path,
+            format!(
+                "src_dir = {}\nout_dir = \"\"\nlanguage = \"rust\"\n",
+                toml_string(legacy_src_dir.to_string_lossy().as_ref())
+            ),
+        )
+        .unwrap();
+
+        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+
+        assert_eq!(startup_error, None);
+        assert_eq!(PathBuf::from(&config.src_dir), workspace.join("play_src"));
+        assert!(workspace.join("play_src").join("main.rs").is_file());
+        assert!(!legacy_src_dir.exists());
+        assert!(
+            fs::read_to_string(config_path)
+                .unwrap()
+                .contains("play_src")
+        );
         let _ = fs::remove_dir_all(workspace);
     }
 
