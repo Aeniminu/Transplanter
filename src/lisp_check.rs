@@ -96,7 +96,6 @@ fn validate_lisp_source_with_checkers(
             )
         })?;
 
-        let mut not_found = Vec::new();
         for checker in checkers {
             match run_checker(*checker, &temp_dir, &validation_path) {
                 Ok(output) if output.status.success() => return Ok(()),
@@ -108,20 +107,14 @@ fn validate_lisp_source_with_checkers(
                         command_details(&output)
                     ));
                 }
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    not_found.push(checker.command());
-                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => {
                     return Err(format!("エラー: {}を起動できません: {err}", checker.name()));
                 }
             }
         }
 
-        Err(format!(
-            "エラー: `{}` はLisp入力ですが、外部Scheme検査に使う Guile Scheme (`guild` / `guile`) または Chez Scheme (`chezscheme` / `scheme`) が見つかりません。\nGuile または Chez Scheme をインストールしてPATHに追加してください。\n試したコマンド: {}",
-            display_path(input_path),
-            not_found.join(", ")
-        ))
+        Ok(())
     })();
 
     let _ = fs::remove_dir_all(&temp_dir);
@@ -289,13 +282,8 @@ mod tests {
     }
 
     #[test]
-    fn reports_missing_checker() {
-        let err = validate_lisp_source_with_checkers(
-            Path::new("main.scm"),
-            "(define (main) (harvest))",
-            &[],
-        )
-        .unwrap_err();
-        assert!(err.contains("外部Scheme検査"), "{err}");
+    fn skips_external_check_when_checker_is_missing() {
+        validate_lisp_source_with_checkers(Path::new("main.scm"), "(define (main) (harvest))", &[])
+            .unwrap();
     }
 }

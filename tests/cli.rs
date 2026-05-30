@@ -334,7 +334,7 @@ fn check_flag_reports_lisp_file_position() {
 }
 
 #[test]
-fn check_flag_rejects_lisp_without_external_scheme_checker() {
+fn check_flag_accepts_lisp_without_external_scheme_checker() {
     let workspace = temp_workspace("missing_scheme_checker");
     let input_path = workspace.join("main.scm");
     write_file(
@@ -352,12 +352,15 @@ fn check_flag_rejects_lisp_without_external_scheme_checker() {
         .output()
         .expect("failed to run transplanter");
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("外部Scheme検査"), "stderr: {stderr}");
-    assert!(stderr.contains("Guile Scheme"), "stderr: {stderr}");
-    assert!(stderr.contains("Chez Scheme"), "stderr: {stderr}");
-    assert!(stderr.contains("guile"), "stderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("OK: {}\n", input_path.to_string_lossy())
+    );
 
     let _ = fs::remove_dir_all(workspace);
 }

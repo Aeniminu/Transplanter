@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "transplanter"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "transplanter_lisp",
  "transplanter_rust",
@@ -43,11 +43,11 @@ dependencies = [
 
 [[package]]
 name = "transplanter_lisp"
-version = "0.1.12"
+version = "0.1.13"
 
 [[package]]
 name = "transplanter_rust"
-version = "0.1.12"
+version = "0.1.13"
 
 [[package]]
 name = "unicode-ident"

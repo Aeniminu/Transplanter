@@ -119,7 +119,7 @@ Rust は関数オーバーロードができないため、複数引数のゲー
 
 ## Scheme風Lisp 入力の書き方
 
-`.scm` / `.lisp` を変換するには、Transplanter本体に加えて Guile Scheme または Chez Scheme が必要です。どれか1つがPATHから起動できれば使えます。
+`.scm` / `.lisp` はTransplanter本体だけでも変換できます。Guile Scheme または Chez Scheme がPATHから起動できる場合は、変換前に追加のScheme検査も行います。
 
 ```powershell
 guild --version
@@ -128,14 +128,14 @@ chezscheme --version
 scheme --version
 ```
 
-検査はこの順番で試します。
+追加検査はこの順番で試します。
 
 1. `guild compile`、Guile Scheme
 2. `guile -s`、Guile Scheme
 3. `chezscheme --script`、Chez Scheme
 4. `scheme --script`、Chez Scheme系コマンド
 
-GUIでLisp保存後に `.py` が更新されない場合は、ウィンドウの `error = "..."` を確認してください。Guile / Chez が見つからない場合やLisp構文エラーがある場合は、理由を表示して出力を止めます。
+GUIでLisp保存後に `.py` が更新されない場合は、ウィンドウの `error = "..."` を確認してください。Lisp構文エラーがある場合は、理由を表示して出力を止めます。Guile / Chez が見つからないだけなら、追加検査を省略して変換を続けます。
 
 基本の考え方:
 
@@ -175,7 +175,7 @@ GUIでLisp保存後に `.py` が更新されない場合は、ウィンドウの
 | `(if (!= (get-ground-type) (ground soil)) (till))` | `if (get_ground_type() != Grounds.Soil):` |
 | `(use-item (item fertilizer))` | `use_item(Items.Fertilizer)` |
 
-Lisp版はSchemeそのものを丸ごと実装する処理系ではありません。macro、quote、末尾再帰最適化、ライブラリ読み込み、本物のレキシカルスコープの完全再現はまだ対象外です。ただし、`.py` を出力する前に、Transplanter用の検査preludeを付けた状態で Guile Scheme または Chez Scheme に渡します。
+Lisp版はSchemeそのものを丸ごと実装する処理系ではありません。macro、quote、末尾再帰最適化、ライブラリ読み込み、本物のレキシカルスコープの完全再現はまだ対象外です。Guile Scheme または Chez Scheme が見つかる場合は、`.py` を出力する前に、Transplanter用の検査preludeを付けた状態で外部Scheme処理系にも渡します。
 
 ## ファイルを分ける場合
 
@@ -278,7 +278,7 @@ pub fn main() {
 | ゲーム内の unlock 状態・所持数・実行結果 | ゲーム内で確定 | 変換器は静的なコード生成だけを行う |
 | ゲーム API の実際の挙動 | ゲーム内で実行 | `transplanter_rust::prelude` は Rust IDE 補完用の空実装 |
 
-Rust の所有権・借用・ライフタイムの意味論はゲーム側には再現されません。ただし、選択中の言語モードで対象になる `.rs` は `cargo check` を通すので、Rustとして壊れた書き方は `.py` になる前に止まります。対象になる `.scm` / `.lisp` は Transplanter の Lisp パーサーと外部Scheme処理系で確認します。
+Rust の所有権・借用・ライフタイムの意味論はゲーム側には再現されません。ただし、選択中の言語モードで対象になる `.rs` は `cargo check` を通すので、Rustとして壊れた書き方は `.py` になる前に止まります。対象になる `.scm` / `.lisp` は Transplanter の Lisp パーサーで確認し、外部Scheme処理系が見つかる場合は追加で確認します。
 
 ## ソースからビルドする場合
 
@@ -324,7 +324,7 @@ src/
   project.rs                      ソースフォルダから Save フォルダへの同期・監視
   rust_modules.rs                 mod 宣言と複数ファイル出力の判定
   rust_check.rs                   cargo check による Rust 検証
-  lisp_check.rs                   Guile/Chez による Lisp 検証
+  lisp_check.rs                   Guile/Chez がある場合の Lisp 追加検証
   ide_support.rs                  transplanter_rust 補助crate生成
   paths.rs                        パス表示、toml文字列、既定フォルダ
   updater.rs                      GitHub Release の更新確認と差し替え準備
