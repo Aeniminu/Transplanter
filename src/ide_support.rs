@@ -218,23 +218,24 @@ fn support_manifest() -> &'static str {
 
 pub fn remove_rust_ide_support(src_dir: &Path) -> Result<(), String> {
     let manifest_dir = system_dir_for_src_dir(src_dir);
-    remove_generated_manifest(&manifest_dir.join("Cargo.toml"))?;
-    remove_generated_support_crate(&manifest_dir.join(IDE_SUPPORT_CRATE_DIR))?;
+    remove_manifest_if_generated(&manifest_dir.join("Cargo.toml"))?;
+    remove_support_crate_if_generated(&manifest_dir.join(IDE_SUPPORT_CRATE_DIR))?;
     remove_legacy_rust_ide_support(src_dir)
 }
 
 pub fn remove_legacy_rust_ide_support(src_dir: &Path) -> Result<(), String> {
     let project_dir = project_dir_for_src_dir(src_dir);
-    remove_generated_manifest(&project_dir.join("Cargo.toml"))?;
+    remove_manifest_if_generated(&project_dir.join("Cargo.toml"))?;
+    remove_lockfile_if_generated(&project_dir.join("Cargo.lock"))?;
 
     let legacy_dir = project_dir.join(LEGACY_IDE_SUPPORT_DIR);
-    remove_generated_support_crate(&legacy_dir.join(IDE_SUPPORT_CRATE_DIR))?;
+    remove_support_crate_if_generated(&legacy_dir.join(IDE_SUPPORT_CRATE_DIR))?;
     remove_empty_dir(&legacy_dir);
     Ok(())
 }
 
-fn remove_generated_manifest(path: &Path) -> Result<(), String> {
-    if !is_generated_manifest(path) {
+fn remove_manifest_if_generated(path: &Path) -> Result<(), String> {
+    if !is_transplanter_scripts_manifest(path) {
         return Ok(());
     }
 
@@ -242,7 +243,7 @@ fn remove_generated_manifest(path: &Path) -> Result<(), String> {
         .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(path)))
 }
 
-fn is_generated_manifest(path: &Path) -> bool {
+fn is_transplanter_scripts_manifest(path: &Path) -> bool {
     let Ok(contents) = fs::read_to_string(path) else {
         return false;
     };
@@ -252,7 +253,25 @@ fn is_generated_manifest(path: &Path) -> bool {
         && contents.contains("transplanter_rust = { path = ")
 }
 
-fn remove_generated_support_crate(crate_dir: &Path) -> Result<(), String> {
+fn remove_lockfile_if_generated(path: &Path) -> Result<(), String> {
+    if !is_transplanter_scripts_lockfile(path) {
+        return Ok(());
+    }
+
+    fs::remove_file(path)
+        .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(path)))
+}
+
+fn is_transplanter_scripts_lockfile(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+
+    contents.contains("name = \"transplanter-scripts\"")
+        && contents.contains("name = \"transplanter_rust\"")
+}
+
+fn remove_support_crate_if_generated(crate_dir: &Path) -> Result<(), String> {
     if !is_generated_support_crate(crate_dir) {
         return Ok(());
     }

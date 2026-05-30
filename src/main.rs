@@ -14,6 +14,9 @@ mod rust_modules;
 mod updater;
 
 #[cfg(windows)]
+mod workspace_setup;
+
+#[cfg(windows)]
 mod win_gui;
 
 fn main() {

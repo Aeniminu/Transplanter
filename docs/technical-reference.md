@@ -16,9 +16,11 @@ language = "rust"
 
 `language` は `rust` / `lisp` / `auto` のどれかです。新規GUIワークスペースは `rust` から始まります。古い設定ファイルに `language` がない場合は、互換性のため `auto` として読みます。
 
-新規作成時の既定ソースフォルダは `play_src` です。古い環境で `src_dir` が実在する `rs_src` を指している場合は、その設定をそのまま尊重します。`rs_src` が見つからない場合は、新しい既定の `play_src` に最初のファイルを作ります。
+新規作成時の既定ソースフォルダは `play_src` です。古い環境で `src_dir` が `rs_src` を指している場合は、起動時のフォルダチェックで中身を `play_src` へ移し、設定も `play_src` を指すように更新します。
 
 古い作業フォルダ直下の `transplanter.toml` しか見つからない場合は、読み込んだ後に `.transplanter/transplanter.toml` へ移行し、移行できた場合だけ古い設定ファイルを削除します。
+
+`rs_src` と `play_src` に同名の別内容ファイルがある場合は、自動では上書きも削除もせず、GUIの `error = "..."` に衝突を表示します。
 
 ## IDE 補助
 
@@ -35,6 +37,8 @@ cargo check --manifest-path .transplanter\Cargo.toml
 Lisp mode ではRust補助は不要なので、Transplanterが生成した `.transplanter/Cargo.toml` と `.transplanter/transplanter_rust/` は整理されます。
 
 Rust / Lisp mode では、選択していない言語の未編集starterも整理されます。対象は既定内容と完全一致する `main.rs` / `main.scm` に限定します。ユーザーが編集した `.rs` / `.scm` / `.lisp` は削除しません。Auto mode は混在用なので、この整理を行いません。
+
+起動時のフォルダチェックでは、旧構成の `Cargo.toml`、`Cargo.lock`、`.transplanter_ide/` も、Transplanter生成物と判定できる場合だけ整理します。任意のユーザーフォルダや編集済みコードは削除対象にしません。
 
 Rust は関数オーバーロードができないため、複数引数のゲームAPIにはRust風aliasを使います。
 
