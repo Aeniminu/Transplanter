@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ide_support::{write_manifest_for_files, write_support_crate};
 use crate::paths::{
-    IDE_SUPPORT_CRATE_DIR, absolute_manifest_path, display_path, is_rs_file, manifest_path_string,
-    toml_string,
+    IDE_SUPPORT_CRATE_DIR, SYSTEM_DIR, absolute_manifest_path, display_path, is_rs_file,
+    manifest_path_string, toml_string,
 };
 
 pub fn validate_project_files(src_dir: &Path, rs_files: &[PathBuf]) -> Result<(), String> {
@@ -84,26 +84,33 @@ fn render_single_file_validation_manifest(input_path: &Path) -> String {
 
 fn find_nearest_transplanter_manifest(input_path: &Path) -> Option<PathBuf> {
     input_path.parent()?.ancestors().find_map(|dir| {
-        let manifest_path = dir.join("Cargo.toml");
-        if !manifest_path.is_file() {
-            return None;
+        for manifest_path in [
+            dir.join(SYSTEM_DIR).join("Cargo.toml"),
+            dir.join("Cargo.toml"),
+        ] {
+            if !manifest_path.is_file() {
+                continue;
+            }
+
+            let manifest = fs::read_to_string(&manifest_path).ok()?;
+            if is_generated_transplanter_manifest(&manifest) {
+                return Some(manifest_path);
+            }
         }
 
-        let manifest = fs::read_to_string(&manifest_path).ok()?;
-        manifest
-            .contains(IDE_SUPPORT_CRATE_DIR)
-            .then_some(manifest_path)
+        None
     })
 }
 
 fn run_cargo_check(manifest_path: &Path) -> Result<(), String> {
+    let manifest_path = absolute_manifest_path(manifest_path);
     let output = Command::new("cargo")
         .arg("check")
         .arg("--quiet")
         .arg("--color")
         .arg("never")
         .arg("--manifest-path")
-        .arg(manifest_path)
+        .arg(&manifest_path)
         .current_dir(manifest_path.parent().unwrap_or_else(|| Path::new(".")))
         .output()
         .map_err(|err| {
@@ -127,6 +134,12 @@ fn run_cargo_check(manifest_path: &Path) -> Result<(), String> {
     Err(format!(
         "エラー: `.rs` がRustとしてコンパイルできません。\n{details}"
     ))
+}
+
+fn is_generated_transplanter_manifest(manifest: &str) -> bool {
+    manifest.contains("name = \"transplanter-scripts\"")
+        && manifest.contains("autobins = false")
+        && manifest.contains("transplanter_rust = { path = ")
 }
 
 fn rust_validation_temp_dir() -> PathBuf {

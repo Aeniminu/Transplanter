@@ -494,9 +494,9 @@ fn sync_uses_default_directories() {
         "harvest()\n"
     );
     assert!(
-        fs::read_to_string(workspace.join("Cargo.toml"))
+        fs::read_to_string(transplanter_manifest(&workspace))
             .unwrap()
-            .contains("path = \"play_src/main.rs\"")
+            .contains("path = \"../play_src/main.rs\"")
     );
     assert!(
         String::from_utf8(output.stdout)
@@ -528,21 +528,21 @@ fn init_ide_generates_manifest() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let manifest = fs::read_to_string(workspace.join("Cargo.toml")).unwrap();
+    let manifest = fs::read_to_string(transplanter_manifest(&workspace)).unwrap();
     assert!(manifest.contains("[dependencies]"), "{manifest}");
     assert!(
-        manifest.contains("transplanter_rust = { path = \".transplanter_ide/transplanter_rust\" }"),
+        manifest.contains("transplanter_rust = { path = \"transplanter_rust\" }"),
         "{manifest}"
     );
     assert!(manifest.contains("[[bin]]"), "{manifest}");
     assert!(manifest.contains("name = \"main\""), "{manifest}");
     assert!(
-        manifest.contains("path = \"play_src/main.rs\""),
+        manifest.contains("path = \"../play_src/main.rs\""),
         "{manifest}"
     );
     assert!(
         workspace
-            .join(".transplanter_ide")
+            .join(".transplanter")
             .join("transplanter_rust")
             .join("src")
             .join("prelude.rs")
@@ -602,7 +602,7 @@ fn main() {
     let check_output = Command::new("cargo")
         .arg("check")
         .arg("--manifest-path")
-        .arg(workspace.join("Cargo.toml"))
+        .arg(transplanter_manifest(&workspace))
         .output()
         .expect("failed to run cargo check");
 
@@ -930,9 +930,9 @@ fn sync_outputs_external_module_as_importable_python_file() {
         "def main():\n    print(\"test_text\")\n"
     );
     assert!(
-        !fs::read_to_string(workspace.join("Cargo.toml"))
+        !fs::read_to_string(transplanter_manifest(&workspace))
             .unwrap()
-            .contains("path = \"play_src/farmlab.rs\"")
+            .contains("path = \"../play_src/farmlab.rs\"")
     );
 
     let _ = fs::remove_dir_all(workspace);
@@ -1187,6 +1187,10 @@ fn path_with_prepended(dir: &Path) -> std::ffi::OsString {
         paths.extend(std::env::split_paths(&current_path));
     }
     std::env::join_paths(paths).unwrap()
+}
+
+fn transplanter_manifest(workspace: &Path) -> std::path::PathBuf {
+    workspace.join(".transplanter").join("Cargo.toml")
 }
 
 #[cfg(windows)]

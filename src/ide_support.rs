@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::paths::{
-    IDE_SUPPORT_CRATE_DIR, display_path, ensure_source_dir, is_rs_file, project_dir_for_src_dir,
-    relative_path_for_manifest, should_skip_source_dir, toml_string,
+    IDE_SUPPORT_CRATE_DIR, LEGACY_IDE_SUPPORT_DIR, absolute_manifest_path, display_path,
+    ensure_source_dir, ensure_system_dir, is_rs_file, project_dir_for_src_dir,
+    relative_path_for_manifest, should_skip_source_dir, system_dir_for_src_dir, toml_string,
 };
 use crate::rust_modules::discover_module_files;
 
@@ -14,17 +15,19 @@ pub fn write_manifest(src_dir: &Path) -> Result<PathBuf, String> {
 }
 
 pub fn write_manifest_for_files(src_dir: &Path, rs_files: &[PathBuf]) -> Result<PathBuf, String> {
-    let project_dir = project_dir_for_src_dir(src_dir);
-    let manifest_path = project_dir.join("Cargo.toml");
-    write_support_crate(&project_dir)?;
+    let manifest_dir = system_dir_for_src_dir(src_dir);
+    ensure_system_dir(&manifest_dir)?;
+    let manifest_path = manifest_dir.join("Cargo.toml");
+    write_support_crate(&manifest_dir)?;
     let module_files = discover_module_files(rs_files)?;
-    let manifest = render_manifest(&project_dir, src_dir, rs_files, &module_files)?;
+    let manifest = render_manifest(&manifest_dir, src_dir, rs_files, &module_files)?;
     fs::write(&manifest_path, manifest).map_err(|err| {
         format!(
             "エラー: `{}` に書き込めません: {err}",
             display_path(&manifest_path)
         )
     })?;
+    remove_legacy_rust_ide_support(src_dir)?;
     Ok(manifest_path)
 }
 
@@ -99,7 +102,7 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> 
 }
 
 fn render_manifest(
-    project_dir: &Path,
+    manifest_dir: &Path,
     src_dir: &Path,
     rs_files: &[PathBuf],
     module_files: &BTreeSet<PathBuf>,
@@ -129,7 +132,7 @@ fn render_manifest(
                 display_path(src_dir)
             )
         })?;
-        let manifest_relative = relative_to_manifest(project_dir, input_path)?;
+        let manifest_relative = relative_to_manifest(manifest_dir, input_path);
         let name = unique_bin_name(source_relative, &mut used_names);
         manifest.push_str("\n[[bin]]\n");
         manifest.push_str(&format!("name = {}\n", toml_string(&name)));
@@ -142,21 +145,42 @@ fn render_manifest(
     Ok(manifest)
 }
 
-fn relative_to_manifest(project_dir: &Path, input_path: &Path) -> Result<PathBuf, String> {
-    if project_dir == Path::new(".") {
-        return Ok(input_path.to_path_buf());
+fn relative_to_manifest(manifest_dir: &Path, input_path: &Path) -> PathBuf {
+    if manifest_dir == Path::new(".") {
+        return input_path.to_path_buf();
     }
 
-    input_path
-        .strip_prefix(project_dir)
-        .map(Path::to_path_buf)
-        .map_err(|_| {
-            format!(
-                "エラー: `{}` は `{}` の中にありません",
-                display_path(input_path),
-                display_path(project_dir)
-            )
-        })
+    let manifest_dir = absolute_manifest_path(manifest_dir);
+    let input_path = absolute_manifest_path(input_path);
+    relative_path_between(&manifest_dir, &input_path).unwrap_or(input_path)
+}
+
+fn relative_path_between(base: &Path, target: &Path) -> Option<PathBuf> {
+    let base_components = base.components().collect::<Vec<_>>();
+    let target_components = target.components().collect::<Vec<_>>();
+    let common_len = base_components
+        .iter()
+        .zip(&target_components)
+        .take_while(|(base, target)| base == target)
+        .count();
+
+    if common_len == 0 {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for component in &base_components[common_len..] {
+        match component {
+            Component::Normal(_) => relative.push(".."),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    for component in &target_components[common_len..] {
+        relative.push(component.as_os_str());
+    }
+
+    Some(relative)
 }
 
 fn unique_bin_name(relative: &Path, used_names: &mut BTreeSet<String>) -> String {
@@ -190,4 +214,75 @@ fn unique_bin_name(relative: &Path, used_names: &mut BTreeSet<String>) -> String
 
 fn support_manifest() -> &'static str {
     "[package]\nname = \"transplanter_rust\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n"
+}
+
+pub fn remove_rust_ide_support(src_dir: &Path) -> Result<(), String> {
+    let manifest_dir = system_dir_for_src_dir(src_dir);
+    remove_generated_manifest(&manifest_dir.join("Cargo.toml"))?;
+    remove_generated_support_crate(&manifest_dir.join(IDE_SUPPORT_CRATE_DIR))?;
+    remove_legacy_rust_ide_support(src_dir)
+}
+
+pub fn remove_legacy_rust_ide_support(src_dir: &Path) -> Result<(), String> {
+    let project_dir = project_dir_for_src_dir(src_dir);
+    remove_generated_manifest(&project_dir.join("Cargo.toml"))?;
+
+    let legacy_dir = project_dir.join(LEGACY_IDE_SUPPORT_DIR);
+    remove_generated_support_crate(&legacy_dir.join(IDE_SUPPORT_CRATE_DIR))?;
+    remove_empty_dir(&legacy_dir);
+    Ok(())
+}
+
+fn remove_generated_manifest(path: &Path) -> Result<(), String> {
+    if !is_generated_manifest(path) {
+        return Ok(());
+    }
+
+    fs::remove_file(path)
+        .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(path)))
+}
+
+fn is_generated_manifest(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+
+    contents.contains("name = \"transplanter-scripts\"")
+        && contents.contains("autobins = false")
+        && contents.contains("transplanter_rust = { path = ")
+}
+
+fn remove_generated_support_crate(crate_dir: &Path) -> Result<(), String> {
+    if !is_generated_support_crate(crate_dir) {
+        return Ok(());
+    }
+
+    fs::remove_dir_all(crate_dir).map_err(|err| {
+        format!(
+            "エラー: `{}` を削除できません: {err}",
+            display_path(crate_dir)
+        )
+    })
+}
+
+fn is_generated_support_crate(crate_dir: &Path) -> bool {
+    let manifest_path = crate_dir.join("Cargo.toml");
+    let lib_path = crate_dir.join("src").join("lib.rs");
+    let prelude_path = crate_dir.join("src").join("prelude.rs");
+
+    fs::read_to_string(manifest_path).is_ok_and(|contents| contents == support_manifest())
+        && fs::read_to_string(lib_path).is_ok_and(|contents| contents == "pub mod prelude;\n")
+        && fs::read_to_string(prelude_path).is_ok_and(|contents| {
+            contents == include_str!("../converters/rust_to_python/src/prelude.rs")
+        })
+}
+
+fn remove_empty_dir(dir: &Path) {
+    if fs::read_dir(dir)
+        .ok()
+        .and_then(|mut entries| entries.next())
+        .is_none()
+    {
+        let _ = fs::remove_dir(dir);
+    }
 }

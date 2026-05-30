@@ -10,9 +10,12 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use crate::ide_support::write_manifest;
+use crate::ide_support::{remove_rust_ide_support, write_manifest};
 use crate::language::LanguageMode;
-use crate::paths::{DEFAULT_SRC_DIR, LEGACY_DEFAULT_SRC_DIR, display_path, should_skip_source_dir};
+use crate::paths::{
+    DEFAULT_SRC_DIR, LEGACY_DEFAULT_SRC_DIR, SYSTEM_DIR, display_path, ensure_system_dir,
+    should_skip_source_dir,
+};
 use crate::project::{
     FileStamp, compile_project_file, output_path_for, snapshot_output_files, snapshot_source_files,
     sync_project,
@@ -98,6 +101,7 @@ const LANGUAGE_EQUAL_LEFT: i32 = 156;
 const LANGUAGE_VALUE_LEFT: i32 = 174;
 const IMPORT_ROW_TOP: i32 = 88;
 const STATUS_ROW_TOP: i32 = 134;
+const DIAGNOSTIC_ROW_TOP: i32 = 180;
 const SRC_ROW_TOP: i32 = 226;
 const OUT_ROW_TOP: i32 = 272;
 const LANGUAGE_ROW_TOP: i32 = 318;
@@ -328,6 +332,7 @@ struct GuiState {
     last_src_text: String,
     last_out_text: String,
     status_text: String,
+    diagnostic_text: String,
     active: bool,
     spinner: usize,
     hover_target: Option<HoverTarget>,
@@ -504,6 +509,7 @@ struct CodeText<'a> {
     out: &'a str,
     language: &'a str,
     status: &'a str,
+    diagnostic: &'a str,
     hover_target: Option<HoverTarget>,
     blink_on: bool,
     update_available: bool,
@@ -608,6 +614,7 @@ impl GuiState {
             last_src_text: config.src_dir.clone(),
             last_out_text: config.out_dir.clone(),
             status_text: String::new(),
+            diagnostic_text: String::new(),
             config,
             config_path,
             startup_error,
@@ -815,7 +822,7 @@ unsafe fn create_controls(hwnd: HWND, state: &mut GuiState) {
     set_window_text(src_edit, &state.config.src_dir);
     set_window_text(out_edit, &state.config.out_dir);
     if let Some(error) = &state.startup_error {
-        set_status(hwnd, error);
+        set_diagnostic(hwnd, error);
     }
 }
 
@@ -937,6 +944,7 @@ unsafe fn paint_window(hwnd: HWND) {
         out_text,
         language_text,
         status_text,
+        diagnostic_text,
         hover_target,
         blink_on,
         update_available,
@@ -950,6 +958,7 @@ unsafe fn paint_window(hwnd: HWND) {
                 state.config.out_dir.clone(),
                 state.config.language.display_name().to_string(),
                 state.status_text.clone(),
+                state.diagnostic_text.clone(),
                 state.hover_target,
                 state.spinner % 4 < 2,
                 update_clickable(state),
@@ -960,6 +969,7 @@ unsafe fn paint_window(hwnd: HWND) {
         })
         .unwrap_or_else(|| {
             (
+                String::new(),
                 String::new(),
                 String::new(),
                 String::new(),
@@ -982,6 +992,7 @@ unsafe fn paint_window(hwnd: HWND) {
             out: &out_text,
             language: &language_text,
             status: &status_text,
+            diagnostic: &diagnostic_text,
             hover_target,
             blink_on,
             update_available,
@@ -1073,6 +1084,7 @@ unsafe fn paint_window(hwnd: HWND) {
         );
         draw_import_line(hdc, theme, render);
         draw_status_text(hdc, theme, code_text, render);
+        draw_diagnostic_text(hdc, theme, code_text, render);
         draw_config_text(hdc, theme, code_text, render);
         RestoreDC(hdc, clip_state);
 
@@ -1514,6 +1526,26 @@ unsafe fn draw_status_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: 
     );
 }
 
+unsafe fn draw_diagnostic_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: CodeRender) {
+    let Some(diagnostic) = diagnostic_display_value(text.diagnostic) else {
+        return;
+    };
+
+    draw_code_segments(
+        hdc,
+        theme,
+        render,
+        DIAGNOSTIC_ROW_TOP,
+        &[
+            ("error", COLOR_KEYWORD),
+            (" = ", COLOR_KEYWORD),
+            ("\"", COLOR_TEXT),
+            (&diagnostic, COLOR_TEXT),
+            ("\"", COLOR_TEXT),
+        ],
+    );
+}
+
 fn truncate_for_status(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -1558,6 +1590,13 @@ unsafe fn measure_code_content_width(
     if let Some(status_text) = status_display_text(text.status, text.update_available) {
         right = right.max(
             layout.content_left() + measure_text_width(hdc, theme.code_font, layout, &status_text),
+        );
+    }
+
+    if let Some(diagnostic_text) = diagnostic_display_text(text.diagnostic) {
+        right = right.max(
+            layout.content_left()
+                + measure_text_width(hdc, theme.code_font, layout, &diagnostic_text),
         );
     }
 
@@ -1667,6 +1706,42 @@ fn status_display_text(status: &str, update_available: bool) -> Option<String> {
     let compact = compact_error_message(status);
     let compact = truncate_for_status(&compact, 42);
     Some(format!("status = \"{compact}\""))
+}
+
+fn diagnostic_display_text(diagnostic: &str) -> Option<String> {
+    diagnostic_display_value(diagnostic).map(|value| format!("error = \"{value}\""))
+}
+
+fn diagnostic_display_value(diagnostic: &str) -> Option<String> {
+    let compact = compact_error_message(diagnostic);
+    let compact = compact.trim();
+    if compact.is_empty() {
+        return None;
+    }
+
+    Some(code_string_literal_value(compact))
+}
+
+fn code_string_literal_value(value: &str) -> String {
+    let mut output = String::new();
+    let mut last_was_space = false;
+    for ch in value.chars() {
+        let ch = match ch {
+            '\r' | '\n' | '\t' => ' ',
+            '"' => '\'',
+            _ => ch,
+        };
+        if ch.is_whitespace() {
+            if !last_was_space {
+                output.push(' ');
+            }
+            last_was_space = true;
+        } else {
+            output.push(ch);
+            last_was_space = false;
+        }
+    }
+    output
 }
 
 fn horizontal_scroll_metrics(
@@ -2371,7 +2446,7 @@ unsafe fn save_config_only(hwnd: HWND) {
     }
 
     if let Err(err) = prepare_existing_workspace(&config) {
-        set_status(hwnd, &err);
+        set_diagnostic(hwnd, &err);
     }
     InvalidateRect(hwnd, null(), 0);
 }
@@ -2386,7 +2461,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
 
     if config.src_dir.is_empty() {
         deactivate_run(hwnd, state);
-        set_status(hwnd, "エラー: ソースフォルダが空です");
+        set_diagnostic(hwnd, "エラー: ソースフォルダが空です");
         return;
     }
 
@@ -2394,19 +2469,19 @@ unsafe fn save_config_and_start(hwnd: HWND) {
 
     if !src_dir.is_dir() {
         deactivate_run(hwnd, state);
-        set_status(hwnd, "エラー: ソースフォルダが見つかりません");
+        set_diagnostic(hwnd, "エラー: ソースフォルダが見つかりません");
         return;
     }
 
-    if let Err(err) = ensure_starter_file(&config) {
+    if let Err(err) = prepare_language_workspace(&config) {
         deactivate_run(hwnd, state);
-        set_status(hwnd, &err);
+        set_diagnostic(hwnd, &err);
         return;
     }
 
     if config.out_dir.is_empty() {
         deactivate_run(hwnd, state);
-        set_status(hwnd, "待機中: Saveフォルダを選択");
+        set_diagnostic(hwnd, "エラー: Saveフォルダを選択してください");
         return;
     }
 
@@ -2414,7 +2489,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
 
     if let Err(err) = fs::create_dir_all(&out_dir) {
         deactivate_run(hwnd, state);
-        set_status(
+        set_diagnostic(
             hwnd,
             &format!("エラー: Save フォルダを作成できません: {err}"),
         );
@@ -2427,6 +2502,7 @@ unsafe fn save_config_and_start(hwnd: HWND) {
         .is_some_and(|watcher| watcher.matches(&src_dir, &out_dir, config.language))
     {
         state.active = true;
+        clear_diagnostic(hwnd);
         invalidate_run_controls(hwnd);
         InvalidateRect(hwnd, null(), 0);
         return;
@@ -2449,7 +2525,9 @@ unsafe fn save_config_and_start(hwnd: HWND) {
         thread: Some(thread),
     });
     state.active = true;
-    set_status(hwnd, "監視中");
+    clear_diagnostic(hwnd);
+    invalidate_run_controls(hwnd);
+    InvalidateRect(hwnd, null(), 0);
 }
 
 unsafe fn sync_once(hwnd: HWND) {
@@ -2460,22 +2538,25 @@ unsafe fn sync_once(hwnd: HWND) {
     let config = config_from_state(state);
 
     if config.src_dir.is_empty() || config.out_dir.is_empty() {
-        set_status(hwnd, "待機中: Saveフォルダを選択");
+        set_diagnostic(
+            hwnd,
+            "エラー: ソースフォルダとSaveフォルダを選択してください",
+        );
         return;
     }
 
     let src_dir = PathBuf::from(&config.src_dir);
     let out_dir = PathBuf::from(&config.out_dir);
     let result = (|| {
-        ensure_starter_file(&config)?;
+        prepare_language_workspace(&config)?;
         fs::create_dir_all(&out_dir)
             .map_err(|err| format!("エラー: Save フォルダを作成できません: {err}"))?;
         sync_project(&src_dir, &out_dir, config.language)
     })();
 
     match result {
-        Ok(count) => set_status(hwnd, &format!("OK: {count} 件を変換しました")),
-        Err(err) => set_status(hwnd, &err),
+        Ok(_count) => clear_diagnostic(hwnd),
+        Err(err) => set_diagnostic(hwnd, &err),
     }
 }
 
@@ -2610,7 +2691,7 @@ fn compact_error_message(message: &str) -> String {
         return message.to_string();
     };
 
-    for marker in [".rs:", ".py:"] {
+    for marker in [".rs:", ".scm:", ".lisp:", ".py:"] {
         if let Some(marker_pos) = body.find(marker) {
             let path_end = marker_pos + marker.len() - 1;
             let path = &body[..path_end];
@@ -2659,8 +2740,11 @@ unsafe fn drain_events(hwnd: HWND) {
 
     for event in events {
         match event {
-            GuiEvent::Status(message) => set_status(hwnd, &message),
-            GuiEvent::Error(message) => set_status(hwnd, &message),
+            GuiEvent::Status(message) => {
+                clear_diagnostic(hwnd);
+                set_status(hwnd, &message);
+            }
+            GuiEvent::Error(message) => set_diagnostic(hwnd, &message),
             GuiEvent::UpdateAvailable(release) => handle_update_available(hwnd, release),
             GuiEvent::UpdateUnavailable(release) => handle_update_unavailable(hwnd, release),
         }
@@ -2709,7 +2793,7 @@ unsafe fn persist_current_config(hwnd: HWND, state: &mut GuiState) -> Option<Con
 
     if let Err(err) = write_config(&state.config_path, &config) {
         deactivate_run(hwnd, state);
-        set_status(hwnd, &err);
+        set_diagnostic(hwnd, &err);
         return None;
     }
 
@@ -2736,11 +2820,7 @@ fn prepare_existing_workspace(config: &Config) -> Result<(), String> {
         return Ok(());
     }
 
-    ensure_starter_file(config)?;
-    if config.language.includes_rust() {
-        write_manifest(&src_dir)?;
-    }
-    Ok(())
+    prepare_language_workspace(config)
 }
 
 unsafe fn state_from_hwnd(hwnd: HWND) -> Option<&'static mut GuiState> {
@@ -2759,6 +2839,23 @@ unsafe fn set_status(hwnd: HWND, text: &str) {
     }
     invalidate_run_controls(hwnd);
     InvalidateRect(hwnd, null(), 0);
+}
+
+unsafe fn set_diagnostic(hwnd: HWND, text: &str) {
+    if let Some(state) = state_from_hwnd(hwnd) {
+        state.diagnostic_text = text.to_string();
+    }
+    invalidate_run_controls(hwnd);
+    InvalidateRect(hwnd, null(), 0);
+}
+
+unsafe fn clear_diagnostic(hwnd: HWND) {
+    if let Some(state) = state_from_hwnd(hwnd)
+        && !state.diagnostic_text.is_empty()
+    {
+        state.diagnostic_text.clear();
+        InvalidateRect(hwnd, null(), 0);
+    }
 }
 
 fn is_version_status(text: &str) -> bool {
@@ -2799,7 +2896,7 @@ unsafe fn set_window_text(hwnd: HWND, text: &str) {
 }
 
 fn config_path() -> PathBuf {
-    exe_dir().join(CONFIG_FILE_NAME)
+    exe_dir().join(SYSTEM_DIR).join(CONFIG_FILE_NAME)
 }
 
 fn exe_dir() -> PathBuf {
@@ -2812,21 +2909,49 @@ fn exe_dir() -> PathBuf {
 
 fn load_or_create_initial_workspace(config_path: &Path) -> (Config, Option<String>) {
     let config_exists = config_path.is_file();
+    let legacy_config_path = legacy_config_path_for(config_path);
+    let legacy_config_exists = !config_exists && legacy_config_path.is_file();
     let mut config = if config_exists {
         match read_config(config_path) {
+            Ok(config) => config,
+            Err(err) => return (Config::default(), Some(err)),
+        }
+    } else if legacy_config_exists {
+        match read_config(&legacy_config_path) {
             Ok(config) => config,
             Err(err) => return (Config::default(), Some(err)),
         }
     } else {
         default_initial_config(config_path)
     };
-    let config_needs_write =
-        !config_exists || use_default_src_if_missing_legacy_src(config_path, &mut config);
+    let switched_missing_legacy_src =
+        use_default_src_if_missing_legacy_src(config_path, &mut config);
+    let config_needs_write = !config_exists || legacy_config_exists || switched_missing_legacy_src;
 
     match ensure_initial_workspace(config_path, &config, config_needs_write) {
-        Ok(()) => (config, None),
+        Ok(()) => {
+            let cleanup_error = if legacy_config_exists {
+                remove_legacy_config(&legacy_config_path).err()
+            } else {
+                None
+            };
+            (config, cleanup_error)
+        }
         Err(err) => (config, Some(err)),
     }
+}
+
+fn legacy_config_path_for(config_path: &Path) -> PathBuf {
+    config_base_dir(config_path).join(CONFIG_FILE_NAME)
+}
+
+fn remove_legacy_config(path: &Path) -> Result<(), String> {
+    fs::remove_file(path).map_err(|err| {
+        format!(
+            "エラー: 旧設定 `{}` を削除できません: {err}",
+            display_path(path)
+        )
+    })
 }
 
 fn use_default_src_if_missing_legacy_src(config_path: &Path, config: &mut Config) -> bool {
@@ -2877,10 +3002,15 @@ fn absolute_config_relative_path(config_path: &Path, path: &Path) -> PathBuf {
 }
 
 fn config_base_dir(config_path: &Path) -> PathBuf {
-    config_path
+    let parent = config_path
         .parent()
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(|| PathBuf::from("."));
+    if parent.file_name().and_then(|name| name.to_str()) == Some(SYSTEM_DIR) {
+        parent.parent().map(Path::to_path_buf).unwrap_or(parent)
+    } else {
+        parent
+    }
 }
 
 fn ensure_initial_workspace(
@@ -2904,11 +3034,45 @@ fn ensure_initial_workspace(
         )
     })?;
 
+    prepare_language_workspace(config)
+}
+
+fn prepare_language_workspace(config: &Config) -> Result<(), String> {
     ensure_starter_file(config)?;
+    cleanup_generated_files_for_mode(config)?;
+
     if config.language.includes_rust() {
-        write_manifest(&src_dir)?;
+        write_manifest(&PathBuf::from(&config.src_dir))?;
+    } else {
+        remove_rust_ide_support(&PathBuf::from(&config.src_dir))?;
     }
+
     Ok(())
+}
+
+fn cleanup_generated_files_for_mode(config: &Config) -> Result<(), String> {
+    let src_dir = PathBuf::from(&config.src_dir);
+    match config.language {
+        LanguageMode::Rust => {
+            remove_generated_file_if_exact(&src_dir.join("main.scm"), DEFAULT_MAIN_SCM)
+        }
+        LanguageMode::Lisp => {
+            remove_generated_file_if_exact(&src_dir.join("main.rs"), DEFAULT_MAIN_RS)
+        }
+        LanguageMode::Auto => Ok(()),
+    }
+}
+
+fn remove_generated_file_if_exact(path: &Path, generated_contents: &str) -> Result<(), String> {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    if contents != generated_contents {
+        return Ok(());
+    }
+
+    fs::remove_file(path)
+        .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(path)))
 }
 
 fn ensure_starter_file(config: &Config) -> Result<(), String> {
@@ -2969,9 +3133,23 @@ fn read_config(path: &Path) -> Result<Config, String> {
 }
 
 fn write_config(path: &Path, config: &Config) -> Result<(), String> {
+    ensure_config_parent(path)?;
     let contents = render_config(config);
     fs::write(path, contents)
         .map_err(|err| format!("エラー: `{}` に書き込めません: {err}", display_path(path)))
+}
+
+fn ensure_config_parent(path: &Path) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+
+    if parent.file_name().and_then(|name| name.to_str()) == Some(SYSTEM_DIR) {
+        ensure_system_dir(parent)
+    } else {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("エラー: `{}` を作成できません: {err}", display_path(parent)))
+    }
 }
 
 fn render_config(config: &Config) -> String {
@@ -3101,7 +3279,7 @@ mod tests {
     #[test]
     fn initial_setup_creates_project_files() {
         let workspace = temp_workspace("initial_setup");
-        let config_path = workspace.join("transplanter.toml");
+        let config_path = system_config_path(&workspace);
 
         let (config, startup_error) = load_or_create_initial_workspace(&config_path);
 
@@ -3116,22 +3294,19 @@ mod tests {
                 .unwrap()
                 .contains("harvest();")
         );
-        assert!(workspace.join("Cargo.toml").is_file());
+        assert!(!workspace.join("Cargo.toml").exists());
+        assert!(workspace.join(".transplanter").join("Cargo.toml").is_file());
         assert!(!workspace.join("play_src").join("Cargo.toml").exists());
         assert!(
             workspace
-                .join(".transplanter_ide")
+                .join(".transplanter")
                 .join("transplanter_rust")
                 .join("src")
                 .join("prelude.rs")
                 .is_file()
         );
-        assert!(
-            !workspace
-                .join("play_src")
-                .join(".transplanter_ide")
-                .exists()
-        );
+        assert!(!workspace.join(".transplanter_ide").exists());
+        assert!(!workspace.join("play_src").join(".transplanter").exists());
 
         let _ = fs::remove_dir_all(workspace);
     }
@@ -3145,8 +3320,9 @@ mod tests {
     #[test]
     fn existing_lisp_config_creates_lisp_starter() {
         let workspace = temp_workspace("initial_lisp_setup");
-        let config_path = workspace.join("transplanter.toml");
+        let config_path = system_config_path(&workspace);
         let src_dir = workspace.join("rs_src");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(
             &config_path,
@@ -3163,16 +3339,18 @@ mod tests {
         assert_eq!(config.language, LanguageMode::Lisp);
         assert!(src_dir.join("main.scm").is_file());
         assert!(!src_dir.join("main.rs").exists());
+        assert!(!workspace.join(".transplanter").join("Cargo.toml").exists());
         let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
     fn missing_legacy_rs_src_config_uses_play_src() {
         let workspace = temp_workspace("missing_legacy_rs_src");
-        let config_path = workspace.join("transplanter.toml");
+        let config_path = system_config_path(&workspace);
+        let legacy_config_path = workspace.join("transplanter.toml");
         let legacy_src_dir = workspace.join("rs_src");
         fs::write(
-            &config_path,
+            &legacy_config_path,
             format!(
                 "src_dir = {}\nout_dir = \"\"\nlanguage = \"rust\"\n",
                 toml_string(legacy_src_dir.to_string_lossy().as_ref())
@@ -3186,6 +3364,7 @@ mod tests {
         assert_eq!(PathBuf::from(&config.src_dir), workspace.join("play_src"));
         assert!(workspace.join("play_src").join("main.rs").is_file());
         assert!(!legacy_src_dir.exists());
+        assert!(!legacy_config_path.exists());
         assert!(
             fs::read_to_string(config_path)
                 .unwrap()
@@ -3206,7 +3385,7 @@ mod tests {
         .unwrap();
 
         let (_config, startup_error) =
-            load_or_create_initial_workspace(&workspace.join("transplanter.toml"));
+            load_or_create_initial_workspace(&system_config_path(&workspace));
 
         assert_eq!(startup_error, None);
         assert_eq!(
@@ -3215,6 +3394,87 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn lisp_mode_removes_generated_rust_starter_and_support() {
+        let workspace = temp_workspace("lisp_mode_cleanup");
+        let config_path = system_config_path(&workspace);
+        let src_dir = workspace.join("play_src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("main.rs"), DEFAULT_MAIN_RS).unwrap();
+        write_manifest(&src_dir).unwrap();
+        write_test_config(&config_path, &src_dir, LanguageMode::Lisp);
+
+        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+
+        assert_eq!(startup_error, None);
+        assert_eq!(config.language, LanguageMode::Lisp);
+        assert!(src_dir.join("main.scm").is_file());
+        assert!(!src_dir.join("main.rs").exists());
+        assert!(!workspace.join(".transplanter").join("Cargo.toml").exists());
+        assert!(
+            !workspace
+                .join(".transplanter")
+                .join("transplanter_rust")
+                .exists()
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn rust_mode_removes_only_generated_lisp_starter() {
+        let workspace = temp_workspace("rust_mode_cleanup");
+        let config_path = system_config_path(&workspace);
+        let src_dir = workspace.join("play_src");
+        let edited_lisp = src_dir.join("edited.scm");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("main.scm"), DEFAULT_MAIN_SCM).unwrap();
+        fs::write(&edited_lisp, format!("{DEFAULT_MAIN_SCM}\n; user note\n")).unwrap();
+        write_test_config(&config_path, &src_dir, LanguageMode::Rust);
+
+        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+
+        assert_eq!(startup_error, None);
+        assert_eq!(config.language, LanguageMode::Rust);
+        assert!(src_dir.join("main.rs").is_file());
+        assert!(!src_dir.join("main.scm").exists());
+        assert!(edited_lisp.is_file());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn auto_mode_preserves_mixed_generated_starters() {
+        let workspace = temp_workspace("auto_mode_preserve");
+        let config_path = system_config_path(&workspace);
+        let src_dir = workspace.join("play_src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("main.scm"), DEFAULT_MAIN_SCM).unwrap();
+        write_test_config(&config_path, &src_dir, LanguageMode::Auto);
+
+        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+
+        assert_eq!(startup_error, None);
+        assert_eq!(config.language, LanguageMode::Auto);
+        assert!(src_dir.join("main.rs").is_file());
+        assert!(src_dir.join("main.scm").is_file());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn lisp_diagnostics_are_compacted_for_gui() {
+        let compact = compact_error_message(
+            r"エラー: C:\Users\Player\farming\play_src\main.scm:2行1列: expected expression",
+        );
+        assert_eq!(compact, "エラー: main.scm:2行1列: expected expression");
+
+        let display =
+            diagnostic_display_value("エラー: main.scm:1行1列: bad\nGuile を確認してください")
+                .unwrap();
+        assert_eq!(
+            display,
+            "エラー: main.scm:1行1列: bad Guile を確認してください"
+        );
     }
 
     #[test]
@@ -3320,5 +3580,19 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn system_config_path(workspace: &Path) -> PathBuf {
+        workspace.join(".transplanter").join("transplanter.toml")
+    }
+
+    fn write_test_config(config_path: &Path, src_dir: &Path, language: LanguageMode) {
+        let config = Config {
+            src_dir: src_dir.to_string_lossy().into_owned(),
+            out_dir: String::new(),
+            language,
+            ..Config::default()
+        };
+        write_config(config_path, &config).unwrap();
     }
 }

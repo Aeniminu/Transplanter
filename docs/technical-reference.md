@@ -4,7 +4,7 @@
 
 ## transplanter.toml の役割
 
-`transplanter.toml` はTransplanterの設定メモです。GUIで選んだパスと言語モードが保存されています。
+`transplanter.toml` はTransplanterの設定メモです。GUIで選んだパスと言語モードが保存されています。新しいGUIワークスペースでは、作業フォルダ直下ではなく隠しフォルダ `.transplanter/transplanter.toml` に保存します。
 
 ```toml
 src_dir = "C:\\Users\\YourName\\Desktop\\farming\\play_src"
@@ -12,23 +12,29 @@ out_dir = "C:\\Users\\YourName\\AppData\\LocalLow\\TheFarmerWasReplaced\\TheFarm
 language = "rust"
 ```
 
-ゲームでいうと「このセーブではこの畑とこの納品先を使う」という保存データに近いです。Cargo の `Cargo.toml` はRustプロジェクトの設計図、`transplanter.toml` は変換器の行き先メモ、と分けて考えると分かりやすいです。
+ゲームでいうと「このセーブではこの畑とこの納品先を使う」という保存データに近いです。`.transplanter/Cargo.toml` はRust補完用の設計図、`.transplanter/transplanter.toml` は変換器の行き先メモ、と分けて考えると分かりやすいです。
 
 `language` は `rust` / `lisp` / `auto` のどれかです。新規GUIワークスペースは `rust` から始まります。古い設定ファイルに `language` がない場合は、互換性のため `auto` として読みます。
 
 新規作成時の既定ソースフォルダは `play_src` です。古い環境で `src_dir` が実在する `rs_src` を指している場合は、その設定をそのまま尊重します。`rs_src` が見つからない場合は、新しい既定の `play_src` に最初のファイルを作ります。
 
+古い作業フォルダ直下の `transplanter.toml` しか見つからない場合は、読み込んだ後に `.transplanter/transplanter.toml` へ移行し、移行できた場合だけ古い設定ファイルを削除します。
+
 ## IDE 補助
 
 `play_src/*.rs` はRustファイルなので、Cursorやrust-analyzerの補完を使えます。ただし `harvest()` や `Entity::Carrot` はゲーム独自APIなので、そのままだとRust側では未定義になります。
 
-そのため、Transplanter は作業フォルダ直下に `Cargo.toml` と `.transplanter_ide/transplanter_rust/` を自動生成します。`play_src` の中にはユーザーが読む・書く `.rs` / `.scm` / `.lisp` だけを置く方針です。実際に変換する対象は言語モードで絞られます。
+そのため、Transplanter は `.transplanter/Cargo.toml` と `.transplanter/transplanter_rust/` を自動生成します。`.transplanter` は設定とIDE補助をまとめる隠しフォルダです。`play_src` の中にはユーザーが読む・書く `.rs` / `.scm` / `.lisp` だけを置く方針です。実際に変換する対象は言語モードで絞られます。
 
 Rustとして確認する場合は、PowerShellで `Transplanter.exe` のある作業フォルダから次を実行します。
 
 ```powershell
-cargo check --manifest-path Cargo.toml
+cargo check --manifest-path .transplanter\Cargo.toml
 ```
+
+Lisp mode ではRust補助は不要なので、Transplanterが生成した `.transplanter/Cargo.toml` と `.transplanter/transplanter_rust/` は整理されます。
+
+Rust / Lisp mode では、選択していない言語の未編集starterも整理されます。対象は既定内容と完全一致する `main.rs` / `main.scm` に限定します。ユーザーが編集した `.rs` / `.scm` / `.lisp` は削除しません。Auto mode は混在用なので、この整理を行いません。
 
 Rust は関数オーバーロードができないため、複数引数のゲームAPIにはRust風aliasを使います。
 
@@ -122,6 +128,16 @@ scheme --version
 1. `guild compile`、Guile Scheme
 2. `chezscheme --script`、Chez Scheme
 3. `scheme --script`、Chez Scheme系コマンド
+
+GUIでLisp保存後に `.py` が更新されない場合は、ウィンドウの `error = "..."` を確認してください。Guile / Chez が見つからない場合やLisp構文エラーがある場合は、理由を表示して出力を止めます。
+
+基本の考え方:
+
+- `main` がゲーム側へ送る入口です。`(define (main) ...)` の中身は、Python出力ではトップレベルへ展開されます。
+- 補助関数は `(define (helper x) ...)` のように書き、Pythonの `def helper(x):` へ変換されます。
+- 関数呼び出しは前置記法です。`(harvest)`、`(move :east)`、`(+ x 1)` のように、最初の要素が命令や演算子になります。
+- Lisp側の `kebab-case` は、ゲーム用Pythonでは `snake_case` に変換されます。例: `(quick-print "hi")` -> `quick_print("hi")`。
+- ゲーム定数は小さな式で表します。例: `:east` -> `East`、`(entity bush)` -> `Entities.Bush`、`(item fertilizer)` -> `Items.Fertilizer`。
 
 対応している主な構文:
 
