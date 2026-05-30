@@ -30,20 +30,26 @@ use windows::Win32::UI::Shell::{
     IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
 };
 use windows::core::PCWSTR;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{GlobalFree, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap,
     CreateCompatibleDC, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush,
     DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteDC,
-    DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FillRect, HBRUSH, HDC, HFONT, HPEN,
-    IntersectClipRect, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_NULL, RestoreDC,
-    RoundRect, SRCCOPY, SaveDC, ScreenToClient, SelectClipRgn, SelectObject, SetBkColor, SetBkMode,
-    SetPixel, SetTextColor, SetWindowRgn, TRANSPARENT, UpdateWindow,
+    DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FillRect, GetDC, HBRUSH, HDC, HFONT,
+    HPEN, IntersectClipRect, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_NULL, ReleaseDC,
+    RestoreDC, RoundRect, SRCCOPY, SaveDC, ScreenToClient, SelectClipRgn, SelectObject, SetBkColor,
+    SetBkMode, SetPixel, SetTextColor, SetWindowRgn, TRANSPARENT, UpdateWindow,
 };
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::Console::FreeConsole;
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetCursorPos, GetDlgCtrlID, GetMessageW,
@@ -53,14 +59,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassW, SW_MINIMIZE, SW_SHOW, SendMessageW, SetTimer,
     SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND,
     WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_NCHITTEST,
-    WM_PAINT, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_POPUP,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY,
+    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_POPUP,
 };
 
 const CLASS_NAME: &str = "transplanter_window";
 const WINDOW_TITLE: &str = "Transplanter";
 const STATUS_UPDATE_AVAILABLE: &str = "新しいバージョンがあります";
 const STATUS_UP_TO_DATE: &str = "最新のバージョンです";
+const STATUS_CHECKING: &str = "確認中";
 
 const ID_SRC_EDIT: i32 = 101;
 const ID_OUT_EDIT: i32 = 102;
@@ -98,6 +105,7 @@ const TEXT_ROW_HEIGHT: i32 = 32;
 const RESIZE_BORDER: i32 = 8;
 const HORIZONTAL_SCROLL_HEIGHT: i32 = 7;
 const HORIZONTAL_SCROLL_MIN_THUMB: i32 = 36;
+const CF_UNICODETEXT_FORMAT: u32 = 13;
 
 const COLOR_BACKGROUND: u32 = rgb(84, 87, 85);
 const COLOR_PANEL: u32 = rgb(84, 87, 85);
@@ -113,6 +121,7 @@ const COLOR_RUN_ACTIVE_DOWN: u32 = rgb(189, 70, 0);
 const COLOR_EDIT: u32 = rgb(41, 41, 41);
 const COLOR_GUTTER_LINE: u32 = rgb(82, 84, 82);
 const COLOR_SCROLL: u32 = rgb(75, 77, 75);
+const COLOR_SELECTION: u32 = rgb(92, 98, 96);
 const COLOR_TITLE_SHADOW_SOFT: u32 = rgb(80, 83, 81);
 const COLOR_TITLE_SHADOW_DEEP: u32 = rgb(75, 78, 76);
 const COLOR_EDIT_SHADOW_DEEP: u32 = rgb(36, 36, 36);
@@ -202,6 +211,7 @@ struct Theme {
     edit: HBRUSH,
     gutter_line: HBRUSH,
     scroll: HBRUSH,
+    selection: HBRUSH,
     title_shadow_soft: HBRUSH,
     title_shadow_deep: HBRUSH,
     edit_shadow_deep: HBRUSH,
@@ -228,6 +238,7 @@ impl Theme {
             edit: CreateSolidBrush(COLOR_EDIT),
             gutter_line: CreateSolidBrush(COLOR_GUTTER_LINE),
             scroll: CreateSolidBrush(COLOR_SCROLL),
+            selection: CreateSolidBrush(COLOR_SELECTION),
             title_shadow_soft: CreateSolidBrush(COLOR_TITLE_SHADOW_SOFT),
             title_shadow_deep: CreateSolidBrush(COLOR_TITLE_SHADOW_DEEP),
             edit_shadow_deep: CreateSolidBrush(COLOR_EDIT_SHADOW_DEEP),
@@ -316,6 +327,8 @@ struct GuiState {
     spinner: usize,
     hover_target: Option<HoverTarget>,
     pressed_title_button: Option<TitleButton>,
+    text_selection: Option<TextSelection>,
+    text_drag: Option<TextDrag>,
     horizontal_scroll: i32,
     horizontal_scroll_metrics: Option<HorizontalScrollMetrics>,
     horizontal_scroll_drag: Option<HorizontalScrollDrag>,
@@ -338,6 +351,25 @@ enum TitleButton {
     Step,
     Minimize,
     Close,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct TextPosition {
+    line: usize,
+    char_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TextSelection {
+    anchor: TextPosition,
+    active: TextPosition,
+}
+
+#[derive(Clone, Copy)]
+struct TextDrag {
+    start_point: POINT,
+    moved: bool,
+    pending_target: Option<HoverTarget>,
 }
 
 struct WatchHandle {
@@ -491,6 +523,7 @@ struct CodeText<'a> {
     diagnostic: &'a str,
     hover_target: Option<HoverTarget>,
     blink_on: bool,
+    spinner: usize,
     update_available: bool,
 }
 
@@ -498,6 +531,22 @@ struct CodeText<'a> {
 struct CodeRender {
     layout: WindowLayout,
     scroll_x: i32,
+}
+
+#[derive(Clone, Copy)]
+enum SelectableFont {
+    Title,
+    Code,
+}
+
+struct SelectableLine {
+    text: String,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    scrollable: bool,
+    font: SelectableFont,
 }
 
 enum GuiEvent {
@@ -604,6 +653,8 @@ impl GuiState {
             spinner: 0,
             hover_target: None,
             pressed_title_button: None,
+            text_selection: None,
+            text_drag: None,
             horizontal_scroll: 0,
             horizontal_scroll_metrics: None,
             horizontal_scroll_drag: None,
@@ -681,27 +732,38 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_MOUSEMOVE => {
             let point = point_from_lparam(lparam);
+            if handle_text_selection_mouse_move(hwnd, point) {
+                return 0;
+            }
             if !handle_horizontal_scroll_mouse_move(hwnd, point) {
                 update_hover_from_point(hwnd, point);
             }
             0
         }
         WM_LBUTTONDOWN => {
+            SetFocus(hwnd);
             let point = point_from_lparam(lparam);
             if handle_title_button_mouse_down(hwnd, point) {
                 return 0;
             }
             if !handle_horizontal_scroll_mouse_down(hwnd, point) {
-                handle_text_click(hwnd, point);
+                handle_text_selection_mouse_down(hwnd, point);
             }
             0
         }
         WM_LBUTTONUP => {
             let point = point_from_lparam(lparam);
-            if !finish_title_button_press(hwnd, point) {
+            if !finish_title_button_press(hwnd, point) && !finish_text_selection_drag(hwnd, point) {
                 finish_horizontal_scroll_drag(hwnd);
             }
             0
+        }
+        WM_KEYDOWN => {
+            if handle_key_down(hwnd, wparam) {
+                0
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
         WM_NCHITTEST => hit_test(hwnd, lparam),
         WM_ERASEBKGND => 1,
@@ -926,10 +988,12 @@ unsafe fn paint_window(hwnd: HWND) {
         diagnostic_text,
         hover_target,
         blink_on,
+        spinner,
         update_available,
         requested_scroll,
         active,
         pressed_title_button,
+        text_selection,
     ) = state_from_hwnd(hwnd)
         .map(|state| {
             (
@@ -940,10 +1004,12 @@ unsafe fn paint_window(hwnd: HWND) {
                 state.diagnostic_text.clone(),
                 state.hover_target,
                 state.spinner % 4 < 2,
+                state.spinner,
                 update_clickable(state),
                 state.horizontal_scroll,
                 state.active,
                 state.pressed_title_button,
+                state.text_selection,
             )
         })
         .unwrap_or_else(|| {
@@ -955,9 +1021,11 @@ unsafe fn paint_window(hwnd: HWND) {
                 String::new(),
                 None,
                 true,
+                0,
                 false,
                 0,
                 false,
+                None,
                 None,
             )
         });
@@ -974,6 +1042,7 @@ unsafe fn paint_window(hwnd: HWND) {
             diagnostic: &diagnostic_text,
             hover_target,
             blink_on,
+            spinner,
             update_available,
         };
         let virtual_width = measure_code_content_width(hdc, theme, code_text, layout);
@@ -1052,6 +1121,7 @@ unsafe fn paint_window(hwnd: HWND) {
             FillRect(hdc, &scrollbar, theme.scroll);
         }
 
+        draw_text_selection(hdc, theme, code_text, render, text_selection);
         draw_title_text(hdc, theme, layout, "Transplanter");
         let clip_state = SaveDC(hdc);
         IntersectClipRect(
@@ -1181,12 +1251,7 @@ unsafe fn draw_title_button(
 }
 
 unsafe fn draw_title_text(hdc: HDC, theme: &Theme, layout: WindowLayout, text: &str) {
-    let mut rect = RECT {
-        left: layout.s(124),
-        top: layout.s(20),
-        right: layout.width - layout.s(120),
-        bottom: layout.s(56),
-    };
+    let mut rect = title_text_rect(layout);
     if !rect_has_area(&rect) {
         return;
     }
@@ -1202,6 +1267,162 @@ unsafe fn draw_title_text(hdc: HDC, theme: &Theme, layout: WindowLayout, text: &
         &mut rect,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER,
     );
+}
+
+fn title_text_rect(layout: WindowLayout) -> RECT {
+    RECT {
+        left: layout.s(124),
+        top: layout.s(20),
+        right: layout.width - layout.s(120),
+        bottom: layout.s(56),
+    }
+}
+
+unsafe fn draw_text_selection(
+    hdc: HDC,
+    theme: &Theme,
+    text: CodeText<'_>,
+    render: CodeRender,
+    selection: Option<TextSelection>,
+) {
+    let Some(selection) = selection else {
+        return;
+    };
+    if selection_is_empty(selection) {
+        return;
+    }
+
+    let lines = selectable_lines(text, render.layout);
+    let Some((start, end)) = normalized_selection(selection, &lines) else {
+        return;
+    };
+
+    for (line_index, line) in lines.iter().enumerate() {
+        if line_index < start.line || line_index > end.line {
+            continue;
+        }
+
+        let line_chars = line.text.chars().count();
+        let start_char = if line_index == start.line {
+            start.char_index.min(line_chars)
+        } else {
+            0
+        };
+        let end_char = if line_index == end.line {
+            end.char_index.min(line_chars)
+        } else {
+            line_chars
+        };
+        if start_char >= end_char {
+            continue;
+        }
+
+        let font = selectable_font(theme, line.font);
+        let scroll = if line.scrollable { render.scroll_x } else { 0 };
+        let text_left = line.left - scroll;
+        let mut selection_rect = RECT {
+            left: text_left
+                + measure_text_prefix_width(hdc, font, render.layout, &line.text, start_char),
+            top: line.top + render.layout.s(3),
+            right: text_left
+                + measure_text_prefix_width(hdc, font, render.layout, &line.text, end_char),
+            bottom: line.bottom - render.layout.s(3),
+        };
+        selection_rect.left = selection_rect.left.clamp(line.left, line.right);
+        selection_rect.right = selection_rect.right.clamp(line.left, line.right);
+        if rect_has_area(&selection_rect) {
+            FillRect(hdc, &selection_rect, theme.selection);
+        }
+    }
+}
+
+fn selectable_lines(text: CodeText<'_>, layout: WindowLayout) -> Vec<SelectableLine> {
+    let mut lines = Vec::new();
+    let title = title_text_rect(layout);
+    lines.push(SelectableLine {
+        text: "Transplanter".to_string(),
+        left: title.left,
+        top: title.top,
+        right: title.right,
+        bottom: title.bottom,
+        scrollable: false,
+        font: SelectableFont::Title,
+    });
+
+    push_code_line(
+        &mut lines,
+        layout,
+        IMPORT_ROW_TOP,
+        format!("import {} as transplanter", transplanter_version_module()),
+    );
+    if let Some(status) = status_display_text(text.status, text.update_available, text.spinner) {
+        push_code_line(&mut lines, layout, STATUS_ROW_TOP, status);
+    }
+    if let Some(diagnostic) = diagnostic_display_text(text.diagnostic) {
+        push_code_line(&mut lines, layout, DIAGNOSTIC_ROW_TOP, diagnostic);
+    }
+    push_code_line(
+        &mut lines,
+        layout,
+        SRC_ROW_TOP,
+        format!(
+            "src_dir  = {}",
+            selectable_value_text(text.src, text.blink_on)
+        ),
+    );
+    push_code_line(
+        &mut lines,
+        layout,
+        OUT_ROW_TOP,
+        format!(
+            "out_dir  = {}",
+            selectable_value_text(text.out, text.blink_on)
+        ),
+    );
+    push_code_line(
+        &mut lines,
+        layout,
+        LANGUAGE_ROW_TOP,
+        format!(
+            "language = {}",
+            selectable_value_text(text.language, text.blink_on)
+        ),
+    );
+    push_code_line(
+        &mut lines,
+        layout,
+        CALL_ROW_TOP,
+        "transplanter(src_dir, out_dir, language)".to_string(),
+    );
+    lines
+}
+
+fn push_code_line(lines: &mut Vec<SelectableLine>, layout: WindowLayout, top: i32, text: String) {
+    let top = layout.s(top);
+    lines.push(SelectableLine {
+        text,
+        left: layout.content_left(),
+        top,
+        right: layout.code_right(),
+        bottom: top + layout.text_row_height(),
+        scrollable: true,
+        font: SelectableFont::Code,
+    });
+}
+
+fn selectable_value_text(value: &str, blink_on: bool) -> &str {
+    if value.trim().is_empty() {
+        if blink_on { "_" } else { "" }
+    } else {
+        value
+    }
+}
+
+fn selectable_font(theme: &Theme, font: SelectableFont) -> HFONT {
+    match font {
+        SelectableFont::Title => theme.title_font,
+        SelectableFont::Code => theme.code_font,
+    }
 }
 
 unsafe fn draw_config_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: CodeRender) {
@@ -1454,17 +1675,10 @@ unsafe fn draw_assignment_line(
 }
 
 unsafe fn draw_status_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: CodeRender) {
-    let status = if text.update_available {
-        STATUS_UPDATE_AVAILABLE
-    } else {
-        text.status
-    };
-    if status.trim().is_empty() {
+    let Some(compact) = status_display_value(text.status, text.update_available, text.spinner)
+    else {
         return;
-    }
-
-    let compact = compact_error_message(status);
-    let compact = truncate_for_status(&compact, 42);
+    };
     let top = render.layout.s(STATUS_ROW_TOP);
     let mut rect = RECT {
         left: render.layout.content_left() - render.scroll_x,
@@ -1488,7 +1702,7 @@ unsafe fn draw_status_text(hdc: HDC, theme: &Theme, text: CodeText<'_>, render: 
     SetBkMode(hdc, TRANSPARENT as i32);
     SetTextColor(
         hdc,
-        if status.starts_with("エラー:") {
+        if compact.starts_with("エラー:") {
             COLOR_KEYWORD
         } else if text.update_available && text.blink_on {
             COLOR_TEXT
@@ -1566,7 +1780,8 @@ unsafe fn measure_code_content_width(
             ),
     );
 
-    if let Some(status_text) = status_display_text(text.status, text.update_available) {
+    if let Some(status_text) = status_display_text(text.status, text.update_available, text.spinner)
+    {
         right = right.max(
             layout.content_left() + measure_text_width(hdc, theme.code_font, layout, &status_text),
         );
@@ -1672,19 +1887,30 @@ unsafe fn measure_text_width(hdc: HDC, font: HFONT, layout: WindowLayout, text: 
     rect.right - rect.left
 }
 
-fn status_display_text(status: &str, update_available: bool) -> Option<String> {
+fn status_display_text(status: &str, update_available: bool, spinner: usize) -> Option<String> {
+    status_display_value(status, update_available, spinner)
+        .map(|value| format!("status = \"{value}\""))
+}
+
+fn status_display_value(status: &str, update_available: bool, spinner: usize) -> Option<String> {
     let status = if update_available {
-        STATUS_UPDATE_AVAILABLE
+        STATUS_UPDATE_AVAILABLE.to_string()
+    } else if status.trim().is_empty() {
+        format!("{STATUS_CHECKING} {}", command_spinner(spinner))
     } else {
-        status
+        status.to_string()
     };
     if status.trim().is_empty() {
         return None;
     }
 
-    let compact = compact_error_message(status);
+    let compact = compact_error_message(&status);
     let compact = truncate_for_status(&compact, 42);
-    Some(format!("status = \"{compact}\""))
+    Some(compact)
+}
+
+fn command_spinner(spinner: usize) -> char {
+    ['/', '-', '\\', '|'][spinner % 4]
 }
 
 fn diagnostic_display_text(diagnostic: &str) -> Option<String> {
@@ -1801,6 +2027,7 @@ unsafe fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         (_, _, true, _) => HTTOP as LRESULT,
         (_, _, _, true) => HTBOTTOM as LRESULT,
         _ if title_button_at(point, layout).is_some() => HTCLIENT as LRESULT,
+        _ if point_in_rect(point, title_text_rect(layout)) => HTCLIENT as LRESULT,
         _ if point.y >= 0
             && point.y < layout.title_height()
             && point.x > layout.s(120)
@@ -1915,15 +2142,104 @@ unsafe fn finish_horizontal_scroll_drag(hwnd: HWND) {
     }
 }
 
+unsafe fn handle_text_selection_mouse_down(hwnd: HWND, point: POINT) -> bool {
+    let Some(position) = text_position_at_point(hwnd, point, false) else {
+        handle_text_click(hwnd, point);
+        return false;
+    };
+    let layout = layout_for_hwnd(hwnd);
+    let pending_target =
+        state_from_hwnd(hwnd).and_then(|state| hit_target_at(point, state, layout));
+    if let Some(state) = state_from_hwnd(hwnd) {
+        state.text_selection = Some(TextSelection {
+            anchor: position,
+            active: position,
+        });
+        state.text_drag = Some(TextDrag {
+            start_point: point,
+            moved: false,
+            pending_target,
+        });
+        SetCapture(hwnd);
+        InvalidateRect(hwnd, null(), 0);
+        return true;
+    }
+    false
+}
+
+unsafe fn handle_text_selection_mouse_move(hwnd: HWND, point: POINT) -> bool {
+    let Some(drag) = state_from_hwnd(hwnd).and_then(|state| state.text_drag) else {
+        return false;
+    };
+    let Some(position) = text_position_at_point(hwnd, point, true) else {
+        return true;
+    };
+    if let Some(state) = state_from_hwnd(hwnd) {
+        if let Some(selection) = &mut state.text_selection {
+            selection.active = position;
+        }
+        if !state.text_drag.is_some_and(|drag| drag.moved)
+            && point_distance_exceeds(drag.start_point, point, 3)
+            && let Some(text_drag) = &mut state.text_drag
+        {
+            text_drag.moved = true;
+        }
+        InvalidateRect(hwnd, null(), 0);
+        return true;
+    }
+    false
+}
+
+unsafe fn finish_text_selection_drag(hwnd: HWND, point: POINT) -> bool {
+    let drag = if let Some(state) = state_from_hwnd(hwnd) {
+        state.text_drag.take()
+    } else {
+        None
+    };
+    let Some(drag) = drag else {
+        return false;
+    };
+
+    ReleaseCapture();
+    if let Some(position) = text_position_at_point(hwnd, point, true)
+        && let Some(state) = state_from_hwnd(hwnd)
+        && let Some(selection) = &mut state.text_selection
+    {
+        selection.active = position;
+    }
+
+    let mut activate = None;
+    if let Some(state) = state_from_hwnd(hwnd)
+        && (!drag.moved || state.text_selection.is_some_and(selection_is_empty))
+    {
+        state.text_selection = None;
+        activate = drag.pending_target;
+    }
+    InvalidateRect(hwnd, null(), 0);
+    if let Some(target) = activate {
+        activate_text_target(hwnd, target);
+    }
+    true
+}
+
+fn point_distance_exceeds(start: POINT, current: POINT, threshold: i32) -> bool {
+    (start.x - current.x).abs() > threshold || (start.y - current.y).abs() > threshold
+}
+
 unsafe fn handle_text_click(hwnd: HWND, point: POINT) {
     let layout = layout_for_hwnd(hwnd);
     let target = state_from_hwnd(hwnd).and_then(|state| hit_target_at(point, state, layout));
+    if let Some(target) = target {
+        activate_text_target(hwnd, target);
+    }
+}
+
+unsafe fn activate_text_target(hwnd: HWND, target: HoverTarget) {
     match target {
-        Some(HoverTarget::SrcDir) => browse_and_set_path(hwnd, ID_SRC_EDIT, true),
-        Some(HoverTarget::OutDir) => browse_and_set_path(hwnd, ID_OUT_EDIT, false),
-        Some(HoverTarget::Language) => cycle_language_mode(hwnd),
-        Some(HoverTarget::UpdateStatus) => handle_update_clicked(hwnd),
-        None => {}
+        HoverTarget::SrcDir => browse_and_set_path(hwnd, ID_SRC_EDIT, true),
+        HoverTarget::OutDir => browse_and_set_path(hwnd, ID_OUT_EDIT, false),
+        HoverTarget::Language => cycle_language_mode(hwnd),
+        HoverTarget::UpdateStatus => handle_update_clicked(hwnd),
     }
 }
 
@@ -2001,6 +2317,309 @@ fn interactive_rect(target: HoverTarget, layout: WindowLayout, scroll_x: i32) ->
             scrolled_rect(layout, CONTENT_LEFT, STATUS_ROW_TOP, code_right, scroll_x)
         }
     }
+}
+
+unsafe fn text_position_at_point(
+    hwnd: HWND,
+    point: POINT,
+    clamp_to_nearest_line: bool,
+) -> Option<TextPosition> {
+    let layout = layout_for_hwnd(hwnd);
+    let (text, scroll_x) = state_from_hwnd(hwnd)
+        .map(|state| (CodeTextSnapshot::from_state(state), state.horizontal_scroll))?;
+    let lines = selectable_lines(text.as_code_text(), layout);
+    let line_index = selectable_line_index_at_point(&lines, point, clamp_to_nearest_line)?;
+    let line = &lines[line_index];
+    let hdc = GetDC(hwnd);
+    if hdc.is_null() {
+        return Some(TextPosition {
+            line: line_index,
+            char_index: 0,
+        });
+    }
+    let char_index = with_theme(|theme| {
+        let font = selectable_font(theme, line.font);
+        let scroll = if line.scrollable { scroll_x } else { 0 };
+        char_index_at_x(hdc, font, layout, &line.text, line.left - scroll, point.x)
+    });
+    ReleaseDC(hwnd, hdc);
+    Some(TextPosition {
+        line: line_index,
+        char_index,
+    })
+}
+
+fn selectable_line_index_at_point(
+    lines: &[SelectableLine],
+    point: POINT,
+    clamp_to_nearest_line: bool,
+) -> Option<usize> {
+    if lines.is_empty() {
+        return None;
+    }
+
+    if let Some((index, _)) = lines
+        .iter()
+        .enumerate()
+        .find(|(_, line)| point.y >= line.top && point.y < line.bottom)
+        && (clamp_to_nearest_line || (point.x >= lines[index].left && point.x < lines[index].right))
+    {
+        return Some(index);
+    }
+
+    if !clamp_to_nearest_line {
+        return None;
+    }
+
+    if point.y < lines[0].top {
+        return Some(0);
+    }
+    lines
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, line)| {
+            if point.y < line.top {
+                line.top - point.y
+            } else if point.y >= line.bottom {
+                point.y - line.bottom
+            } else {
+                0
+            }
+        })
+        .map(|(index, _)| index)
+}
+
+unsafe fn char_index_at_x(
+    hdc: HDC,
+    font: HFONT,
+    layout: WindowLayout,
+    text: &str,
+    text_left: i32,
+    x: i32,
+) -> usize {
+    let relative_x = x - text_left;
+    if relative_x <= 0 {
+        return 0;
+    }
+
+    let chars = text.chars().count();
+    for index in 0..chars {
+        let left = measure_text_prefix_width(hdc, font, layout, text, index);
+        let right = measure_text_prefix_width(hdc, font, layout, text, index + 1);
+        let midpoint = left + (right - left) / 2;
+        if relative_x < midpoint {
+            return index;
+        }
+    }
+    chars
+}
+
+unsafe fn measure_text_prefix_width(
+    hdc: HDC,
+    font: HFONT,
+    layout: WindowLayout,
+    text: &str,
+    char_count: usize,
+) -> i32 {
+    let prefix = text.chars().take(char_count).collect::<String>();
+    measure_text_width(hdc, font, layout, &prefix)
+}
+
+#[derive(Clone)]
+struct CodeTextSnapshot {
+    src: String,
+    out: String,
+    language: String,
+    status: String,
+    diagnostic: String,
+    hover_target: Option<HoverTarget>,
+    blink_on: bool,
+    spinner: usize,
+    update_available: bool,
+}
+
+impl CodeTextSnapshot {
+    fn from_state(state: &GuiState) -> Self {
+        Self {
+            src: state.config.src_dir.clone(),
+            out: state.config.out_dir.clone(),
+            language: state.config.language.display_name().to_string(),
+            status: state.status_text.clone(),
+            diagnostic: state.diagnostic_text.clone(),
+            hover_target: state.hover_target,
+            blink_on: state.spinner % 4 < 2,
+            spinner: state.spinner,
+            update_available: update_clickable(state),
+        }
+    }
+
+    fn as_code_text(&self) -> CodeText<'_> {
+        CodeText {
+            src: &self.src,
+            out: &self.out,
+            language: &self.language,
+            status: &self.status,
+            diagnostic: &self.diagnostic,
+            hover_target: self.hover_target,
+            blink_on: self.blink_on,
+            spinner: self.spinner,
+            update_available: self.update_available,
+        }
+    }
+}
+
+fn selection_is_empty(selection: TextSelection) -> bool {
+    selection.anchor == selection.active
+}
+
+fn normalized_selection(
+    selection: TextSelection,
+    lines: &[SelectableLine],
+) -> Option<(TextPosition, TextPosition)> {
+    if lines.is_empty() {
+        return None;
+    }
+
+    let clamp = |position: TextPosition| {
+        let line = position.line.min(lines.len().saturating_sub(1));
+        let char_index = position.char_index.min(lines[line].text.chars().count());
+        TextPosition { line, char_index }
+    };
+    let anchor = clamp(selection.anchor);
+    let active = clamp(selection.active);
+    Some(if anchor <= active {
+        (anchor, active)
+    } else {
+        (active, anchor)
+    })
+}
+
+unsafe fn handle_key_down(hwnd: HWND, wparam: WPARAM) -> bool {
+    let ctrl_down = (GetKeyState(0x11) as u16 & 0x8000) != 0;
+    if !ctrl_down {
+        return false;
+    }
+
+    match wparam as u32 {
+        key if key == b'C' as u32 => {
+            if let Some(text) = selected_text(hwnd) {
+                copy_to_clipboard(hwnd, &text);
+            }
+            true
+        }
+        key if key == b'A' as u32 => {
+            select_all_text(hwnd);
+            true
+        }
+        _ => false,
+    }
+}
+
+unsafe fn select_all_text(hwnd: HWND) {
+    let Some((lines, _scroll_x)) = selectable_lines_for_hwnd(hwnd) else {
+        return;
+    };
+    let Some(last_line) = lines.len().checked_sub(1) else {
+        return;
+    };
+    if let Some(state) = state_from_hwnd(hwnd) {
+        state.text_selection = Some(TextSelection {
+            anchor: TextPosition {
+                line: 0,
+                char_index: 0,
+            },
+            active: TextPosition {
+                line: last_line,
+                char_index: lines[last_line].text.chars().count(),
+            },
+        });
+        InvalidateRect(hwnd, null(), 0);
+    }
+}
+
+unsafe fn selected_text(hwnd: HWND) -> Option<String> {
+    let selection = state_from_hwnd(hwnd)?.text_selection?;
+    let (lines, _scroll_x) = selectable_lines_for_hwnd(hwnd)?;
+    selected_text_from_lines(&lines, selection)
+}
+
+unsafe fn selectable_lines_for_hwnd(hwnd: HWND) -> Option<(Vec<SelectableLine>, i32)> {
+    let layout = layout_for_hwnd(hwnd);
+    let (text, scroll_x) = state_from_hwnd(hwnd)
+        .map(|state| (CodeTextSnapshot::from_state(state), state.horizontal_scroll))?;
+    Some((selectable_lines(text.as_code_text(), layout), scroll_x))
+}
+
+fn selected_text_from_lines(lines: &[SelectableLine], selection: TextSelection) -> Option<String> {
+    let (start, end) = normalized_selection(selection, lines)?;
+    if start == end {
+        return None;
+    }
+
+    let mut output = String::new();
+    for (line_index, line) in lines.iter().enumerate() {
+        if line_index < start.line || line_index > end.line {
+            continue;
+        }
+
+        if !output.is_empty() {
+            output.push_str("\r\n");
+        }
+
+        let line_chars = line.text.chars().count();
+        let start_char = if line_index == start.line {
+            start.char_index.min(line_chars)
+        } else {
+            0
+        };
+        let end_char = if line_index == end.line {
+            end.char_index.min(line_chars)
+        } else {
+            line_chars
+        };
+        output.push_str(&slice_chars(&line.text, start_char, end_char));
+    }
+
+    if output.is_empty() {
+        None
+    } else {
+        Some(output)
+    }
+}
+
+fn slice_chars(text: &str, start: usize, end: usize) -> String {
+    text.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
+unsafe fn copy_to_clipboard(hwnd: HWND, text: &str) {
+    let mut text = text.encode_utf16().collect::<Vec<_>>();
+    text.push(0);
+    let byte_len = text.len() * std::mem::size_of::<u16>();
+    let handle = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+    if handle.is_null() {
+        return;
+    }
+
+    let memory = GlobalLock(handle) as *mut u16;
+    if memory.is_null() {
+        GlobalFree(handle);
+        return;
+    }
+    std::ptr::copy_nonoverlapping(text.as_ptr(), memory, text.len());
+    GlobalUnlock(handle);
+
+    if OpenClipboard(hwnd) == 0 {
+        GlobalFree(handle);
+        return;
+    }
+    EmptyClipboard();
+    if SetClipboardData(CF_UNICODETEXT_FORMAT, handle).is_null() {
+        GlobalFree(handle);
+    }
+    CloseClipboard();
 }
 
 fn point_in_rect(point: POINT, rect: RECT) -> bool {
@@ -2701,6 +3320,7 @@ unsafe fn tick_spinner(hwnd: HWND) {
 
 fn needs_text_animation(state: &GuiState) -> bool {
     state.hover_target.is_some()
+        || state.status_text.trim().is_empty()
         || state.config.src_dir.trim().is_empty()
         || state.config.out_dir.trim().is_empty()
         || update_clickable(state)
@@ -2892,6 +3512,46 @@ mod tests {
     }
 
     #[test]
+    fn selected_text_preserves_visible_line_order() {
+        let lines = vec![
+            test_selectable_line("status = \"最新のバージョンです\""),
+            test_selectable_line("src_dir  = C:\\farm\\play_src"),
+            test_selectable_line("out_dir  = C:\\game\\save"),
+        ];
+        let selected = selected_text_from_lines(
+            &lines,
+            TextSelection {
+                anchor: TextPosition {
+                    line: 0,
+                    char_index: 10,
+                },
+                active: TextPosition {
+                    line: 2,
+                    char_index: 10,
+                },
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            "最新のバージョンです\"\r\nsrc_dir  = C:\\farm\\play_src\r\nout_dir  ="
+        );
+    }
+
+    #[test]
+    fn status_shows_spinner_while_checking_version() {
+        assert_eq!(
+            status_display_text("", false, 0).unwrap(),
+            "status = \"確認中 /\""
+        );
+        assert_eq!(
+            status_display_text("", false, 1).unwrap(),
+            "status = \"確認中 -\""
+        );
+    }
+
+    #[test]
     fn watch_loop_reports_compile_errors() {
         let workspace = temp_workspace("compile_error");
         let src_dir = workspace.join("rs_src");
@@ -2994,5 +3654,17 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn test_selectable_line(text: &str) -> SelectableLine {
+        SelectableLine {
+            text: text.to_string(),
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 32,
+            scrollable: false,
+            font: SelectableFont::Code,
+        }
     }
 }
