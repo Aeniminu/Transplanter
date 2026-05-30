@@ -11,6 +11,7 @@ use crate::paths::{display_path, is_lisp_file};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SchemeChecker {
     GuileGuild,
+    GuileCommand,
     ChezScheme(&'static str),
 }
 
@@ -18,6 +19,7 @@ impl SchemeChecker {
     fn command(self) -> &'static str {
         match self {
             Self::GuileGuild => "guild",
+            Self::GuileCommand => "guile",
             Self::ChezScheme(command) => command,
         }
     }
@@ -26,6 +28,9 @@ impl SchemeChecker {
         match self {
             Self::GuileGuild => env::var_os("TRANSPLANTER_GUILE_GUILD")
                 .unwrap_or_else(|| OsString::from(self.command())),
+            Self::GuileCommand => {
+                env::var_os("TRANSPLANTER_GUILE").unwrap_or_else(|| OsString::from(self.command()))
+            }
             Self::ChezScheme("chezscheme") => env::var_os("TRANSPLANTER_CHEZ_SCHEME")
                 .unwrap_or_else(|| OsString::from(self.command())),
             Self::ChezScheme(_) => OsString::from(self.command()),
@@ -35,6 +40,7 @@ impl SchemeChecker {
     fn name(self) -> &'static str {
         match self {
             Self::GuileGuild => "Guile Scheme (`guild compile`)",
+            Self::GuileCommand => "Guile Scheme (`guile -s`)",
             Self::ChezScheme("chezscheme") => "Chez Scheme (`chezscheme --script`)",
             Self::ChezScheme(_) => "Chez Scheme (`scheme --script`)",
         }
@@ -61,6 +67,7 @@ pub fn validate_lisp_source(input_path: &Path, source: &str) -> Result<(), Strin
         source,
         &[
             SchemeChecker::GuileGuild,
+            SchemeChecker::GuileCommand,
             SchemeChecker::ChezScheme("chezscheme"),
             SchemeChecker::ChezScheme("scheme"),
         ],
@@ -111,7 +118,7 @@ fn validate_lisp_source_with_checkers(
         }
 
         Err(format!(
-            "エラー: `{}` はLisp入力ですが、外部Scheme検査に使う Guile Scheme (`guild`) または Chez Scheme (`chezscheme` / `scheme`) が見つかりません。\nGuile または Chez Scheme をインストールしてPATHに追加してください。\n試したコマンド: {}",
+            "エラー: `{}` はLisp入力ですが、外部Scheme検査に使う Guile Scheme (`guild` / `guile`) または Chez Scheme (`chezscheme` / `scheme`) が見つかりません。\nGuile または Chez Scheme をインストールしてPATHに追加してください。\n試したコマンド: {}",
             display_path(input_path),
             not_found.join(", ")
         ))
@@ -131,6 +138,12 @@ fn run_checker(
             .arg("compile")
             .arg("-o")
             .arg(temp_dir.join("transplanter_lisp_check.go"))
+            .arg(validation_path)
+            .current_dir(temp_dir)
+            .output(),
+        SchemeChecker::GuileCommand => Command::new(checker.command_path())
+            .arg("--no-auto-compile")
+            .arg("-s")
             .arg(validation_path)
             .current_dir(temp_dir)
             .output(),

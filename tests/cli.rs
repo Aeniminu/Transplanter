@@ -278,6 +278,35 @@ fn check_flag_accepts_lisp_input() {
 }
 
 #[test]
+fn check_flag_accepts_lisp_with_guile_command() {
+    let workspace = temp_workspace("guile_command_checker");
+    let input_path = workspace.join("main.scm");
+    write_file(
+        &input_path,
+        "(use transplanter)\n\n(define (main)\n  (harvest))\n",
+    );
+    let checker_path = write_fake_guile(&workspace);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_transplanter"))
+        .arg(&input_path)
+        .arg("--check")
+        .env("PATH", &workspace)
+        .env_remove("TRANSPLANTER_GUILE_GUILD")
+        .env("TRANSPLANTER_GUILE", checker_path)
+        .env_remove("TRANSPLANTER_CHEZ_SCHEME")
+        .output()
+        .expect("failed to run transplanter");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn check_flag_reports_lisp_file_position() {
     let input_path = std::env::temp_dir().join(format!(
         "transplanter_cli_invalid_{}_{}.scm",
@@ -318,6 +347,7 @@ fn check_flag_rejects_lisp_without_external_scheme_checker() {
         .arg("--check")
         .env("PATH", &workspace)
         .env_remove("TRANSPLANTER_GUILE_GUILD")
+        .env_remove("TRANSPLANTER_GUILE")
         .env_remove("TRANSPLANTER_CHEZ_SCHEME")
         .output()
         .expect("failed to run transplanter");
@@ -327,6 +357,7 @@ fn check_flag_rejects_lisp_without_external_scheme_checker() {
     assert!(stderr.contains("外部Scheme検査"), "stderr: {stderr}");
     assert!(stderr.contains("Guile Scheme"), "stderr: {stderr}");
     assert!(stderr.contains("Chez Scheme"), "stderr: {stderr}");
+    assert!(stderr.contains("guile"), "stderr: {stderr}");
 
     let _ = fs::remove_dir_all(workspace);
 }
@@ -1200,11 +1231,30 @@ fn write_fake_guild(dir: &Path) -> std::path::PathBuf {
     path
 }
 
+#[cfg(windows)]
+fn write_fake_guile(dir: &Path) -> std::path::PathBuf {
+    let path = dir.join("guile.cmd");
+    write_file(&path, "@echo off\r\nexit /b 0\r\n");
+    path
+}
+
 #[cfg(not(windows))]
 fn write_fake_guild(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let path = dir.join("guild");
+    write_file(&path, "#!/bin/sh\nexit 0\n");
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
+#[cfg(not(windows))]
+fn write_fake_guile(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join("guile");
     write_file(&path, "#!/bin/sh\nexit 0\n");
     let mut permissions = fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o755);

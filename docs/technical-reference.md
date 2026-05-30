@@ -123,6 +123,7 @@ Rust は関数オーバーロードができないため、複数引数のゲー
 
 ```powershell
 guild --version
+guile --version
 chezscheme --version
 scheme --version
 ```
@@ -130,8 +131,9 @@ scheme --version
 検査はこの順番で試します。
 
 1. `guild compile`、Guile Scheme
-2. `chezscheme --script`、Chez Scheme
-3. `scheme --script`、Chez Scheme系コマンド
+2. `guile -s`、Guile Scheme
+3. `chezscheme --script`、Chez Scheme
+4. `scheme --script`、Chez Scheme系コマンド
 
 GUIでLisp保存後に `.py` が更新されない場合は、ウィンドウの `error = "..."` を確認してください。Guile / Chez が見つからない場合やLisp構文エラーがある場合は、理由を表示して出力を止めます。
 

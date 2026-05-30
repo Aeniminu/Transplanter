@@ -122,7 +122,7 @@ Lisp版では、上のように丸かっこで命令を書きます。`main` が
   (plant (entity tree)))
 ```
 
-Lisp版を使う場合は、Transplanter本体に加えて Guile Scheme または Chez Scheme が必要です。これは `.py` を作る前に、Lispコードとして大きな書き間違いがないか確認するためです。入っていない場合、Rust版だけでも遊べます。
+Lisp版を使う場合は、Transplanter本体に加えて Guile Scheme または Chez Scheme が必要です。これは `.py` を作る前に、Lispコードとして大きな書き間違いがないか確認するためです。`guild` または `guile`、もしくは `chezscheme` / `scheme` がPATHから起動できれば使えます。入っていない場合、Rust版だけでも遊べます。
 
 Guile / Chez が見つからない時やLispコードに誤りがある時は、ウィンドウ上に `error = "..."` として理由が表示され、対応する `.py` は更新されません。
 
