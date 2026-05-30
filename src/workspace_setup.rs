@@ -44,38 +44,23 @@ fn exe_dir() -> PathBuf {
 }
 
 pub(crate) fn load_or_create_initial_workspace(config_path: &Path) -> (Config, Option<String>) {
-    let config_exists = config_path.is_file();
-    let legacy_config_path = legacy_config_path_for(config_path);
-    let legacy_config_exists = !config_exists && legacy_config_path.is_file();
-    let mut config = if config_exists {
-        match read_config(config_path) {
-            Ok(config) => config,
-            Err(err) => return (Config::default(), Some(err)),
-        }
-    } else if legacy_config_exists {
-        match read_config(&legacy_config_path) {
-            Ok(config) => config,
-            Err(err) => return (Config::default(), Some(err)),
-        }
-    } else {
-        default_initial_config(config_path)
+    let mut loaded = match load_workspace_config(config_path) {
+        Ok(loaded) => loaded,
+        Err(err) => return (Config::default(), Some(err)),
     };
-    let layout_changed = match check_workspace_layout(config_path, &mut config) {
-        Ok(changed) => changed,
-        Err(err) => return (config, Some(err)),
-    };
-    let config_needs_write = !config_exists || legacy_config_exists || layout_changed;
 
-    match ensure_initial_workspace(config_path, &config, config_needs_write) {
+    let filing_changed = match verify_workspace_filing(config_path, &mut loaded.config) {
+        Ok(changed) => changed,
+        Err(err) => return (loaded.config, Some(err)),
+    };
+    let config_needs_write = loaded.config_source.needs_write_to_current() || filing_changed;
+
+    match ensure_initial_workspace(config_path, &loaded.config, config_needs_write) {
         Ok(()) => {
-            let cleanup_error = if legacy_config_exists {
-                remove_legacy_config(&legacy_config_path).err()
-            } else {
-                None
-            };
-            (config, cleanup_error)
+            let cleanup_error = remove_legacy_config_if_needed(&loaded.config_source);
+            (loaded.config, cleanup_error)
         }
-        Err(err) => (config, Some(err)),
+        Err(err) => (loaded.config, Some(err)),
     }
 }
 
@@ -93,13 +78,67 @@ pub(crate) fn prepare_existing_workspace(config: &Config) -> Result<(), String> 
 }
 
 pub(crate) fn prepare_language_workspace(config: &Config) -> Result<(), String> {
-    ensure_starter_file(config)?;
-    cleanup_generated_files_for_mode(config)?;
+    ensure_mode_starter(config)?;
+    cleanup_generated_starters_for_mode(config)?;
+    apply_rust_support_for_mode(config)?;
+
+    Ok(())
+}
+
+struct LoadedWorkspaceConfig {
+    config: Config,
+    config_source: ConfigSource,
+}
+
+#[derive(Debug)]
+enum ConfigSource {
+    Current,
+    Legacy(PathBuf),
+    Default,
+}
+
+impl ConfigSource {
+    fn needs_write_to_current(&self) -> bool {
+        !matches!(self, Self::Current)
+    }
+}
+
+fn load_workspace_config(config_path: &Path) -> Result<LoadedWorkspaceConfig, String> {
+    if config_path.is_file() {
+        return Ok(LoadedWorkspaceConfig {
+            config: read_config(config_path)?,
+            config_source: ConfigSource::Current,
+        });
+    }
+
+    let legacy_config_path = legacy_config_path_for(config_path);
+    if legacy_config_path.is_file() {
+        return Ok(LoadedWorkspaceConfig {
+            config: read_config(&legacy_config_path)?,
+            config_source: ConfigSource::Legacy(legacy_config_path),
+        });
+    }
+
+    Ok(LoadedWorkspaceConfig {
+        config: default_initial_config(config_path),
+        config_source: ConfigSource::Default,
+    })
+}
+
+fn remove_legacy_config_if_needed(config_source: &ConfigSource) -> Option<String> {
+    match config_source {
+        ConfigSource::Legacy(path) => remove_legacy_config(path).err(),
+        ConfigSource::Current | ConfigSource::Default => None,
+    }
+}
+
+fn apply_rust_support_for_mode(config: &Config) -> Result<(), String> {
+    let src_dir = PathBuf::from(&config.src_dir);
 
     if config.language.includes_rust() {
-        write_manifest(&PathBuf::from(&config.src_dir))?;
+        write_manifest(&src_dir)?;
     } else {
-        remove_rust_ide_support(&PathBuf::from(&config.src_dir))?;
+        remove_rust_ide_support(&src_dir)?;
     }
 
     Ok(())
@@ -118,16 +157,22 @@ fn remove_legacy_config(path: &Path) -> Result<(), String> {
     })
 }
 
-fn check_workspace_layout(config_path: &Path, config: &mut Config) -> Result<bool, String> {
+fn verify_workspace_filing(config_path: &Path, config: &mut Config) -> Result<bool, String> {
     let mut changed = migrate_legacy_default_src_dir(config_path, config)?;
-    cleanup_legacy_workspace_artifacts(config_path, config)?;
-    if config.src_dir.trim().is_empty() {
-        config.src_dir = default_src_dir_for_config(config_path)
-            .to_string_lossy()
-            .into_owned();
-        changed = true;
-    }
+    cleanup_legacy_root_starters(config_path, config)?;
+    changed |= ensure_config_has_source_dir(config_path, config);
     Ok(changed)
+}
+
+fn ensure_config_has_source_dir(config_path: &Path, config: &mut Config) -> bool {
+    if !config.src_dir.trim().is_empty() {
+        return false;
+    }
+
+    config.src_dir = default_src_dir_for_config(config_path)
+        .to_string_lossy()
+        .into_owned();
+    true
 }
 
 fn migrate_legacy_default_src_dir(config_path: &Path, config: &mut Config) -> Result<bool, String> {
@@ -263,7 +308,7 @@ fn remove_empty_dir_or_report(dir: &Path) -> Result<(), String> {
         .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(dir)))
 }
 
-fn cleanup_legacy_workspace_artifacts(config_path: &Path, config: &Config) -> Result<(), String> {
+fn cleanup_legacy_root_starters(config_path: &Path, config: &Config) -> Result<(), String> {
     let base_dir = config_base_dir(config_path);
     let src_dir = if config.src_dir.trim().is_empty() {
         default_src_dir_for_config(config_path)
@@ -272,9 +317,9 @@ fn cleanup_legacy_workspace_artifacts(config_path: &Path, config: &Config) -> Re
     };
 
     if src_dir.parent() == Some(base_dir.as_path()) {
-        remove_generated_file_if_exact(&base_dir.join("main.rs"), DEFAULT_MAIN_RS)?;
-        remove_generated_file_if_exact(&base_dir.join("main.scm"), DEFAULT_MAIN_SCM)?;
-        remove_generated_file_if_exact(&base_dir.join("main.lisp"), DEFAULT_MAIN_SCM)?;
+        remove_generated_starter_if_exact(&base_dir.join("main.rs"), StarterKind::Rust)?;
+        remove_generated_starter_if_exact(&base_dir.join("main.scm"), StarterKind::Lisp)?;
+        remove_generated_starter_if_exact(&base_dir.join("main.lisp"), StarterKind::Lisp)?;
     }
 
     Ok(())
@@ -345,17 +390,23 @@ fn ensure_initial_workspace(
     prepare_language_workspace(config)
 }
 
-fn cleanup_generated_files_for_mode(config: &Config) -> Result<(), String> {
+fn cleanup_generated_starters_for_mode(config: &Config) -> Result<(), String> {
     let src_dir = PathBuf::from(&config.src_dir);
     match config.language {
-        LanguageMode::Rust => {
-            remove_generated_file_if_exact(&src_dir.join("main.scm"), DEFAULT_MAIN_SCM)
-        }
-        LanguageMode::Lisp => {
-            remove_generated_file_if_exact(&src_dir.join("main.rs"), DEFAULT_MAIN_RS)
-        }
+        LanguageMode::Rust => remove_generated_starter_if_exact(
+            &src_dir.join(StarterKind::Lisp.file_name()),
+            StarterKind::Lisp,
+        ),
+        LanguageMode::Lisp => remove_generated_starter_if_exact(
+            &src_dir.join(StarterKind::Rust.file_name()),
+            StarterKind::Rust,
+        ),
         LanguageMode::Auto => Ok(()),
     }
+}
+
+fn remove_generated_starter_if_exact(path: &Path, starter: StarterKind) -> Result<(), String> {
+    remove_generated_file_if_exact(path, starter.contents())
 }
 
 fn remove_generated_file_if_exact(path: &Path, generated_contents: &str) -> Result<(), String> {
@@ -370,24 +421,57 @@ fn remove_generated_file_if_exact(path: &Path, generated_contents: &str) -> Resu
         .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(path)))
 }
 
-fn ensure_starter_file(config: &Config) -> Result<(), String> {
+#[derive(Clone, Copy)]
+enum StarterKind {
+    Rust,
+    Lisp,
+}
+
+impl StarterKind {
+    fn for_mode(language: LanguageMode) -> Self {
+        match language {
+            LanguageMode::Rust | LanguageMode::Auto => Self::Rust,
+            LanguageMode::Lisp => Self::Lisp,
+        }
+    }
+
+    fn language(self) -> LanguageMode {
+        match self {
+            Self::Rust => LanguageMode::Rust,
+            Self::Lisp => LanguageMode::Lisp,
+        }
+    }
+
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::Rust => "main.rs",
+            Self::Lisp => "main.scm",
+        }
+    }
+
+    fn contents(self) -> &'static str {
+        match self {
+            Self::Rust => DEFAULT_MAIN_RS,
+            Self::Lisp => DEFAULT_MAIN_SCM,
+        }
+    }
+}
+
+fn ensure_mode_starter(config: &Config) -> Result<(), String> {
     if config.src_dir.trim().is_empty() {
         return Ok(());
     }
 
     let src_dir = PathBuf::from(&config.src_dir);
-    let (language, file_name, contents) = match config.language {
-        LanguageMode::Rust | LanguageMode::Auto => (LanguageMode::Rust, "main.rs", DEFAULT_MAIN_RS),
-        LanguageMode::Lisp => (LanguageMode::Lisp, "main.scm", DEFAULT_MAIN_SCM),
-    };
+    let starter = StarterKind::for_mode(config.language);
 
-    if has_matching_source_file(&src_dir, language)? {
+    if has_matching_source_file(&src_dir, starter.language())? {
         return Ok(());
     }
 
-    let main_path = src_dir.join(file_name);
+    let main_path = src_dir.join(starter.file_name());
     if !main_path.exists() {
-        fs::write(&main_path, contents).map_err(|err| {
+        fs::write(&main_path, starter.contents()).map_err(|err| {
             format!(
                 "エラー: `{}` に書き込めません: {err}",
                 display_path(&main_path)
@@ -549,37 +633,22 @@ mod tests {
 
     #[test]
     fn initial_setup_creates_project_files() {
-        let workspace = temp_workspace("initial_setup");
-        let config_path = system_config_path(&workspace);
+        let workspace = WorkspaceFixture::new("initial_setup");
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
-        assert_eq!(PathBuf::from(&config.src_dir), workspace.join("play_src"));
+        assert_eq!(PathBuf::from(&config.src_dir), workspace.path("play_src"));
         assert_eq!(config.out_dir, "");
         assert_eq!(config.language, LanguageMode::Rust);
-        assert!(config_path.is_file());
-        assert!(workspace.join("play_src").join("main.rs").is_file());
-        assert!(
-            fs::read_to_string(workspace.join("play_src").join("main.rs"))
-                .unwrap()
-                .contains("harvest();")
-        );
-        assert!(!workspace.join("Cargo.toml").exists());
-        assert!(workspace.join(".transplanter").join("Cargo.toml").is_file());
-        assert!(!workspace.join("play_src").join("Cargo.toml").exists());
-        assert!(
-            workspace
-                .join(".transplanter")
-                .join("transplanter_rust")
-                .join("src")
-                .join("prelude.rs")
-                .is_file()
-        );
-        assert!(!workspace.join(".transplanter_ide").exists());
-        assert!(!workspace.join("play_src").join(".transplanter").exists());
-
-        let _ = fs::remove_dir_all(workspace);
+        workspace.assert_exists(".transplanter/transplanter.toml");
+        workspace.assert_exists("play_src/main.rs");
+        workspace.assert_file_contains("play_src/main.rs", "harvest();");
+        workspace.assert_missing("Cargo.toml");
+        workspace.assert_missing("play_src/Cargo.toml");
+        workspace.assert_missing("play_src/.transplanter");
+        workspace.assert_missing(".transplanter_ide");
+        workspace.assert_generated_rust_support_exists();
     }
 
     #[test]
@@ -590,271 +659,256 @@ mod tests {
 
     #[test]
     fn existing_lisp_config_creates_lisp_starter() {
-        let workspace = temp_workspace("initial_lisp_setup");
-        let config_path = system_config_path(&workspace);
-        let legacy_src_dir = workspace.join("rs_src");
-        let src_dir = workspace.join("play_src");
-        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-        fs::create_dir_all(&legacy_src_dir).unwrap();
-        fs::write(
-            &config_path,
-            format!(
-                "src_dir = {}\nout_dir = \"\"\nlanguage = \"lisp\"\n",
-                toml_string(legacy_src_dir.to_string_lossy().as_ref())
-            ),
-        )
-        .unwrap();
+        let workspace = WorkspaceFixture::new("initial_lisp_setup");
+        workspace.create_dir("rs_src");
+        workspace.write_current_config("rs_src", LanguageMode::Lisp);
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
         assert_eq!(config.language, LanguageMode::Lisp);
-        assert_eq!(PathBuf::from(&config.src_dir), src_dir);
-        assert!(src_dir.join("main.scm").is_file());
-        assert!(!src_dir.join("main.rs").exists());
-        assert!(!legacy_src_dir.exists());
-        assert!(!workspace.join(".transplanter").join("Cargo.toml").exists());
-        let _ = fs::remove_dir_all(workspace);
+        assert_eq!(PathBuf::from(&config.src_dir), workspace.path("play_src"));
+        workspace.assert_exists("play_src/main.scm");
+        workspace.assert_missing("play_src/main.rs");
+        workspace.assert_missing("rs_src");
+        workspace.assert_generated_rust_support_missing();
     }
 
     #[test]
     fn missing_legacy_rs_src_config_uses_play_src() {
-        let workspace = temp_workspace("missing_legacy_rs_src");
-        let config_path = system_config_path(&workspace);
-        let legacy_config_path = workspace.join("transplanter.toml");
-        let legacy_src_dir = workspace.join("rs_src");
-        fs::write(
-            &legacy_config_path,
-            format!(
-                "src_dir = {}\nout_dir = \"\"\nlanguage = \"rust\"\n",
-                toml_string(legacy_src_dir.to_string_lossy().as_ref())
-            ),
-        )
-        .unwrap();
+        let workspace = WorkspaceFixture::new("missing_legacy_rs_src");
+        workspace.write_legacy_config("rs_src", LanguageMode::Rust);
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
-        assert_eq!(PathBuf::from(&config.src_dir), workspace.join("play_src"));
-        assert!(workspace.join("play_src").join("main.rs").is_file());
-        assert!(!legacy_src_dir.exists());
-        assert!(!legacy_config_path.exists());
-        assert!(
-            fs::read_to_string(config_path)
-                .unwrap()
-                .contains("play_src")
-        );
-        let _ = fs::remove_dir_all(workspace);
+        assert_eq!(PathBuf::from(&config.src_dir), workspace.path("play_src"));
+        workspace.assert_exists("play_src/main.rs");
+        workspace.assert_missing("rs_src");
+        workspace.assert_missing("transplanter.toml");
+        workspace.assert_file_contains(".transplanter/transplanter.toml", "play_src");
     }
 
     #[test]
     fn initial_setup_preserves_existing_main_rs() {
-        let workspace = temp_workspace("initial_setup_preserve");
-        let src_dir = workspace.join("play_src");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(
-            src_dir.join("main.rs"),
-            "fn main() {\n    quick_print(7);\n}\n",
-        )
-        .unwrap();
+        let workspace = WorkspaceFixture::new("initial_setup_preserve");
+        workspace.write("play_src/main.rs", "fn main() {\n    quick_print(7);\n}\n");
 
-        let (_config, startup_error) =
-            load_or_create_initial_workspace(&system_config_path(&workspace));
+        let (_config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
-        assert_eq!(
-            fs::read_to_string(src_dir.join("main.rs")).unwrap(),
-            "fn main() {\n    quick_print(7);\n}\n"
-        );
-
-        let _ = fs::remove_dir_all(workspace);
+        workspace.assert_file_contents("play_src/main.rs", "fn main() {\n    quick_print(7);\n}\n");
     }
 
     #[test]
     fn legacy_rs_src_contents_move_to_play_src_on_startup() {
-        let workspace = temp_workspace("legacy_src_migration");
-        let config_path = system_config_path(&workspace);
-        let legacy_src_dir = workspace.join("rs_src");
-        fs::create_dir_all(&legacy_src_dir).unwrap();
-        fs::write(
-            legacy_src_dir.join("main.rs"),
-            "fn main() {\n    quick_print(7);\n}\n",
-        )
-        .unwrap();
-        write_test_config(&config_path, &legacy_src_dir, LanguageMode::Rust);
+        let workspace = WorkspaceFixture::new("legacy_src_migration");
+        workspace.write("rs_src/main.rs", "fn main() {\n    quick_print(7);\n}\n");
+        workspace.write_current_config("rs_src", LanguageMode::Rust);
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
-        assert_eq!(PathBuf::from(&config.src_dir), workspace.join("play_src"));
-        assert!(!legacy_src_dir.exists());
-        assert_eq!(
-            fs::read_to_string(workspace.join("play_src").join("main.rs")).unwrap(),
-            "fn main() {\n    quick_print(7);\n}\n"
-        );
-        assert!(
-            fs::read_to_string(config_path)
-                .unwrap()
-                .contains("play_src")
-        );
-        let _ = fs::remove_dir_all(workspace);
+        assert_eq!(PathBuf::from(&config.src_dir), workspace.path("play_src"));
+        workspace.assert_missing("rs_src");
+        workspace.assert_file_contents("play_src/main.rs", "fn main() {\n    quick_print(7);\n}\n");
+        workspace.assert_file_contains(".transplanter/transplanter.toml", "play_src");
     }
 
     #[test]
     fn legacy_rs_src_conflict_preserves_user_file() {
-        let workspace = temp_workspace("legacy_src_conflict");
-        let config_path = system_config_path(&workspace);
-        let legacy_src_dir = workspace.join("rs_src");
-        let play_src_dir = workspace.join("play_src");
-        fs::create_dir_all(&legacy_src_dir).unwrap();
-        fs::create_dir_all(&play_src_dir).unwrap();
-        fs::write(
-            legacy_src_dir.join("main.rs"),
-            "fn main() {\n    harvest();\n}\n",
-        )
-        .unwrap();
-        fs::write(
-            play_src_dir.join("main.rs"),
-            "fn main() {\n    quick_print(1);\n}\n",
-        )
-        .unwrap();
-        write_test_config(&config_path, &legacy_src_dir, LanguageMode::Rust);
+        let workspace = WorkspaceFixture::new("legacy_src_conflict");
+        workspace.write("rs_src/main.rs", "fn main() {\n    harvest();\n}\n");
+        workspace.write("play_src/main.rs", "fn main() {\n    quick_print(1);\n}\n");
+        workspace.write_current_config("rs_src", LanguageMode::Rust);
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert!(startup_error.is_some());
-        assert_eq!(PathBuf::from(&config.src_dir), legacy_src_dir);
-        assert_eq!(
-            fs::read_to_string(legacy_src_dir.join("main.rs")).unwrap(),
-            "fn main() {\n    harvest();\n}\n"
-        );
-        assert_eq!(
-            fs::read_to_string(play_src_dir.join("main.rs")).unwrap(),
-            "fn main() {\n    quick_print(1);\n}\n"
-        );
-        let _ = fs::remove_dir_all(workspace);
+        assert_eq!(PathBuf::from(&config.src_dir), workspace.path("rs_src"));
+        workspace.assert_file_contents("rs_src/main.rs", "fn main() {\n    harvest();\n}\n");
+        workspace.assert_file_contents("play_src/main.rs", "fn main() {\n    quick_print(1);\n}\n");
     }
 
     #[test]
     fn lisp_mode_removes_generated_rust_starter_and_support() {
-        let workspace = temp_workspace("lisp_mode_cleanup");
-        let config_path = system_config_path(&workspace);
-        let src_dir = workspace.join("play_src");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.rs"), DEFAULT_MAIN_RS).unwrap();
-        write_manifest(&src_dir).unwrap();
-        write_test_config(&config_path, &src_dir, LanguageMode::Lisp);
+        let workspace = WorkspaceFixture::new("lisp_mode_cleanup");
+        workspace.write("play_src/main.rs", DEFAULT_MAIN_RS);
+        write_manifest(&workspace.path("play_src")).unwrap();
+        workspace.write_current_config("play_src", LanguageMode::Lisp);
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
         assert_eq!(config.language, LanguageMode::Lisp);
-        assert!(src_dir.join("main.scm").is_file());
-        assert!(!src_dir.join("main.rs").exists());
-        assert!(!workspace.join(".transplanter").join("Cargo.toml").exists());
-        assert!(
-            !workspace
-                .join(".transplanter")
-                .join("transplanter_rust")
-                .exists()
-        );
-        let _ = fs::remove_dir_all(workspace);
+        workspace.assert_exists("play_src/main.scm");
+        workspace.assert_missing("play_src/main.rs");
+        workspace.assert_generated_rust_support_missing();
     }
 
     #[test]
     fn rust_mode_removes_only_generated_lisp_starter() {
-        let workspace = temp_workspace("rust_mode_cleanup");
-        let config_path = system_config_path(&workspace);
-        let src_dir = workspace.join("play_src");
-        let edited_lisp = src_dir.join("edited.scm");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.scm"), DEFAULT_MAIN_SCM).unwrap();
-        fs::write(&edited_lisp, format!("{DEFAULT_MAIN_SCM}\n; user note\n")).unwrap();
-        write_test_config(&config_path, &src_dir, LanguageMode::Rust);
+        let workspace = WorkspaceFixture::new("rust_mode_cleanup");
+        workspace.write("play_src/main.scm", DEFAULT_MAIN_SCM);
+        workspace.write(
+            "play_src/edited.scm",
+            &format!("{DEFAULT_MAIN_SCM}\n; user note\n"),
+        );
+        workspace.write_current_config("play_src", LanguageMode::Rust);
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
         assert_eq!(config.language, LanguageMode::Rust);
-        assert!(src_dir.join("main.rs").is_file());
-        assert!(!src_dir.join("main.scm").exists());
-        assert!(edited_lisp.is_file());
-        let _ = fs::remove_dir_all(workspace);
+        workspace.assert_exists("play_src/main.rs");
+        workspace.assert_missing("play_src/main.scm");
+        workspace.assert_exists("play_src/edited.scm");
     }
 
     #[test]
     fn auto_mode_preserves_mixed_generated_starters() {
-        let workspace = temp_workspace("auto_mode_preserve");
-        let config_path = system_config_path(&workspace);
-        let src_dir = workspace.join("play_src");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.scm"), DEFAULT_MAIN_SCM).unwrap();
-        write_test_config(&config_path, &src_dir, LanguageMode::Auto);
+        let workspace = WorkspaceFixture::new("auto_mode_preserve");
+        workspace.write("play_src/main.scm", DEFAULT_MAIN_SCM);
+        workspace.write_current_config("play_src", LanguageMode::Auto);
 
-        let (config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
         assert_eq!(config.language, LanguageMode::Auto);
-        assert!(src_dir.join("main.rs").is_file());
-        assert!(src_dir.join("main.scm").is_file());
-        let _ = fs::remove_dir_all(workspace);
+        workspace.assert_exists("play_src/main.rs");
+        workspace.assert_exists("play_src/main.scm");
     }
 
     #[test]
     fn startup_removes_legacy_generated_rust_artifacts() {
-        let workspace = temp_workspace("legacy_generated_artifacts");
-        let config_path = system_config_path(&workspace);
-        let src_dir = workspace.join("play_src");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.rs"), DEFAULT_MAIN_RS).unwrap();
-        fs::write(
-            workspace.join("Cargo.toml"),
+        let workspace = WorkspaceFixture::new("legacy_generated_artifacts");
+        workspace.write("play_src/main.rs", DEFAULT_MAIN_RS);
+        workspace.write(
+            "Cargo.toml",
             "[package]\nname = \"transplanter-scripts\"\nautobins = false\n\n[dependencies]\ntransplanter_rust = { path = \".transplanter_ide/transplanter_rust\" }\n",
-        )
-        .unwrap();
-        fs::write(
-            workspace.join("Cargo.lock"),
+        );
+        workspace.write(
+            "Cargo.lock",
             "[[package]]\nname = \"transplanter-scripts\"\n\n[[package]]\nname = \"transplanter_rust\"\n",
-        )
-        .unwrap();
-        crate::ide_support::write_support_crate(&workspace.join(".transplanter_ide")).unwrap();
-        write_test_config(&config_path, &src_dir, LanguageMode::Rust);
+        );
+        crate::ide_support::write_support_crate(&workspace.path(".transplanter_ide")).unwrap();
+        workspace.write_current_config("play_src", LanguageMode::Rust);
 
-        let (_config, startup_error) = load_or_create_initial_workspace(&config_path);
+        let (_config, startup_error) = load_or_create_initial_workspace(&workspace.config_path());
 
         assert_eq!(startup_error, None);
-        assert!(!workspace.join("Cargo.toml").exists());
-        assert!(!workspace.join("Cargo.lock").exists());
-        assert!(!workspace.join(".transplanter_ide").exists());
-        assert!(workspace.join(".transplanter").join("Cargo.toml").is_file());
-        let _ = fs::remove_dir_all(workspace);
+        workspace.assert_missing("Cargo.toml");
+        workspace.assert_missing("Cargo.lock");
+        workspace.assert_missing(".transplanter_ide");
+        workspace.assert_generated_rust_support_exists();
     }
 
-    fn temp_workspace(name: &str) -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "transplanter_workspace_setup_{name}_{}_{}",
-            std::process::id(),
-            suffix
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
+    struct WorkspaceFixture {
+        root: PathBuf,
     }
 
-    fn system_config_path(workspace: &Path) -> PathBuf {
-        workspace.join(".transplanter").join("transplanter.toml")
+    impl WorkspaceFixture {
+        fn new(name: &str) -> Self {
+            let suffix = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "transplanter_workspace_setup_{name}_{}_{}",
+                std::process::id(),
+                suffix
+            ));
+            fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+
+        fn path(&self, relative: &str) -> PathBuf {
+            self.root.join(Path::new(relative))
+        }
+
+        fn config_path(&self) -> PathBuf {
+            self.path(".transplanter/transplanter.toml")
+        }
+
+        fn create_dir(&self, relative: &str) {
+            fs::create_dir_all(self.path(relative)).unwrap();
+        }
+
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.path(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, contents).unwrap();
+        }
+
+        fn write_current_config(&self, src_dir: &str, language: LanguageMode) {
+            self.write_config_at(&self.config_path(), src_dir, language);
+        }
+
+        fn write_legacy_config(&self, src_dir: &str, language: LanguageMode) {
+            self.write_config_at(&self.path("transplanter.toml"), src_dir, language);
+        }
+
+        fn write_config_at(&self, config_path: &Path, src_dir: &str, language: LanguageMode) {
+            let config = Config {
+                src_dir: self.path(src_dir).to_string_lossy().into_owned(),
+                out_dir: String::new(),
+                language,
+                ..Config::default()
+            };
+            write_config(config_path, &config).unwrap();
+        }
+
+        fn assert_exists(&self, relative: &str) {
+            let path = self.path(relative);
+            assert!(path.exists(), "expected `{}` to exist", path.display());
+        }
+
+        fn assert_missing(&self, relative: &str) {
+            let path = self.path(relative);
+            assert!(
+                !path.exists(),
+                "expected `{}` to be missing",
+                path.display()
+            );
+        }
+
+        fn assert_file_contents(&self, relative: &str, expected: &str) {
+            let path = self.path(relative);
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                expected,
+                "{}",
+                path.display()
+            );
+        }
+
+        fn assert_file_contains(&self, relative: &str, needle: &str) {
+            let path = self.path(relative);
+            let contents = fs::read_to_string(&path).unwrap();
+            assert!(
+                contents.contains(needle),
+                "expected `{}` to contain `{}`",
+                path.display(),
+                needle
+            );
+        }
+
+        fn assert_generated_rust_support_exists(&self) {
+            self.assert_exists(".transplanter/Cargo.toml");
+            self.assert_exists(".transplanter/transplanter_rust/src/prelude.rs");
+        }
+
+        fn assert_generated_rust_support_missing(&self) {
+            self.assert_missing(".transplanter/Cargo.toml");
+            self.assert_missing(".transplanter/transplanter_rust");
+        }
     }
 
-    fn write_test_config(config_path: &Path, src_dir: &Path, language: LanguageMode) {
-        let config = Config {
-            src_dir: src_dir.to_string_lossy().into_owned(),
-            out_dir: String::new(),
-            language,
-            ..Config::default()
-        };
-        write_config(config_path, &config).unwrap();
+    impl Drop for WorkspaceFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }

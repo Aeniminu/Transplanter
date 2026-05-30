@@ -235,7 +235,7 @@ pub fn remove_legacy_rust_ide_support(src_dir: &Path) -> Result<(), String> {
 }
 
 fn remove_manifest_if_generated(path: &Path) -> Result<(), String> {
-    if !is_transplanter_scripts_manifest(path) {
+    if !is_generated_rust_support_manifest(path) {
         return Ok(());
     }
 
@@ -243,7 +243,7 @@ fn remove_manifest_if_generated(path: &Path) -> Result<(), String> {
         .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(path)))
 }
 
-fn is_transplanter_scripts_manifest(path: &Path) -> bool {
+fn is_generated_rust_support_manifest(path: &Path) -> bool {
     let Ok(contents) = fs::read_to_string(path) else {
         return false;
     };
@@ -254,7 +254,7 @@ fn is_transplanter_scripts_manifest(path: &Path) -> bool {
 }
 
 fn remove_lockfile_if_generated(path: &Path) -> Result<(), String> {
-    if !is_transplanter_scripts_lockfile(path) {
+    if !is_generated_rust_support_lockfile(path) {
         return Ok(());
     }
 
@@ -262,7 +262,7 @@ fn remove_lockfile_if_generated(path: &Path) -> Result<(), String> {
         .map_err(|err| format!("エラー: `{}` を削除できません: {err}", display_path(path)))
 }
 
-fn is_transplanter_scripts_lockfile(path: &Path) -> bool {
+fn is_generated_rust_support_lockfile(path: &Path) -> bool {
     let Ok(contents) = fs::read_to_string(path) else {
         return false;
     };
